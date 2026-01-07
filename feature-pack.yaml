@@ -18,15 +18,15 @@ api:
   routes:
     - path: /api/dashboard-definitions
       methods: [GET, POST]
-      handler: "@hit/feature-pack-dashboards/server/api/dashboard-definitions"
+      handler: "@hit/feature-pack-dashboard-core/server/api/dashboard-definitions"
       description: "List dashboard definitions visible to the user (GET) or create a dashboard definition (POST)"
     - path: /api/dashboard-definitions/[key]
       methods: [GET, PUT]
-      handler: "@hit/feature-pack-dashboards/server/api/dashboard-definitions-key"
+      handler: "@hit/feature-pack-dashboard-core/server/api/dashboard-definitions-key"
       description: "Get a dashboard definition (GET) or update a user-owned definition (PUT)"
     - path: /api/dashboard-definitions/[key]/shares
       methods: [GET, POST, DELETE]
-      handler: "@hit/feature-pack-dashboards/server/api/dashboard-definitions-shares"
+      handler: "@hit/feature-pack-dashboard-core/server/api/dashboard-definitions-shares"
       description: "List/add/remove share entries for a dashboard definition (ACL)"
 
 routes:

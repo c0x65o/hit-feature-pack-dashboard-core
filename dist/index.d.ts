@@ -1,5 +1,5 @@
 /**
- * @hit/feature-pack-dashboards
+ * @hit/feature-pack-dashboard-core
  *
  * Owns the dashboards runtime + dashboard definition storage/APIs.
  */
