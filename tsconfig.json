@@ -17,9 +17,12 @@
     "declarationMap": true,
     "outDir": "./dist",
     "rootDir": "./src",
-    "types": [
-      "node"
-    ]
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": {
+      "@/lib/*": ["./src/lib-stubs/*"],
+      "@hit/acl-utils": ["./src/lib-stubs/acl-utils"]
+    }
   },
   "include": [
     "src/**/*"
