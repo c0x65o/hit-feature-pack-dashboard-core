@@ -1,6 +1,6 @@
-name: dashboards
+name: dashboard-core
 title: Dashboards
-description: Dashboard runtime + dashboard definition storage/APIs
+description: "Dashboard core: runtime + dashboard definition storage/APIs"
 
 schema:
   source: src/schema/dashboard-definitions.ts

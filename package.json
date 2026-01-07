@@ -1,6 +1,6 @@
 {
   "name": "@hit/feature-pack-dashboards",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "A HIT feature pack",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -44,7 +44,6 @@
     "zod": "^4.3.2"
   },
   "peerDependencies": {
-    "@hit/acl-utils": "*",
     "@hit/sdk": "*",
     "@hit/ui-kit": "*",
     "drizzle-orm": "^0.38.0",
@@ -56,9 +55,8 @@
     "react-resizable": "^3.0.5"
   },
   "devDependencies": {
-    "@hit/acl-utils": "file:../hit-acl-utils",
     "@hit/sdk": "file:../../hit-sdks/hit-sdk-typescript",
-    "@hit/ui-kit": "file:../hit-ui-kit",
+    "@hit/ui-kit": "file:../../packages/hit-ui-kit-ts",
     "@types/node": "^20",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",

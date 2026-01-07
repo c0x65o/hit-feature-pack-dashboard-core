@@ -4,7 +4,7 @@ import { getDb } from '@/lib/db';
 import { sql } from 'drizzle-orm';
 import { extractUserFromRequest } from '../auth';
 import crypto from 'node:crypto';
-import { resolveUserPrincipals } from '@hit/acl-utils';
+import { resolveUserPrincipals } from '@/lib/acl-utils';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -49,8 +49,8 @@ export async function GET(request: NextRequest) {
           )`
         : sql`true`;
 
-    const groupList = userGroups.map((g) => sql`${g}`);
-    const roleList = userRoles.map((r) => sql`${r}`);
+    const groupList = userGroups.map((g: string) => sql`${g}`);
+    const roleList = userRoles.map((r: string) => sql`${r}`);
     const sharedAccess =
       userGroups.length || userRoles.length
         ? sql`exists (
