@@ -4,8 +4,8 @@
  * Drizzle table definitions for dashboard definitions + ACL shares.
  *
  * NOTE:
- * - This was moved out of dashboard-shell so dashboards become a first-class pack.
- * - Table Views + Notification Reads remain in dashboard-shell.
+ * - This was moved out of erp-shell-core so dashboards become a first-class pack.
+ * - Table Views + Notification Reads remain in erp-shell-core.
  */
 import { type InferSelectModel, type InferInsertModel } from 'drizzle-orm';
 /**

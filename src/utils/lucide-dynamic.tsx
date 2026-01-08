@@ -48,14 +48,14 @@ export function LucideIcon({
 }) {
   const key = normalizeKey(name);
   if (!key) {
-    throw new Error(`[hit-dashboard-shell] Lucide icon name is empty`);
+    throw new Error(`[hit-dashboard-core] Lucide icon name is empty`);
   }
   // `lucide-react`'s module namespace includes exports that don't match our component shape
   // (e.g. the base `Icon` component). We only need runtime lookup by key, so cast via `unknown`.
   const Icon = (LucideIcons as unknown as Record<string, LucideIconComponent>)[key];
   if (!Icon) {
     throw new Error(
-      `[hit-dashboard-shell] Unknown Lucide icon "${name}" (normalized: "${key}"). ` +
+      `[hit-dashboard-core] Unknown Lucide icon "${name}" (normalized: "${key}"). ` +
         `Check the icon name in your nav config.`
     );
   }
