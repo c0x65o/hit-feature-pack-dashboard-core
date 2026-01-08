@@ -2,8 +2,8 @@
 
 import React from 'react';
 import { useSearchParams } from 'next/navigation';
-import { useUi } from '@hit/ui-kit';
-import { AclPicker } from '@hit/ui-kit';
+import { useUi, AclPicker, type AclPickerConfig, type AclEntry } from '@hit/ui-kit';
+import { createFetchPrincipals } from '@hit/feature-pack-auth-core';
 import { useThemeTokens } from '@hit/ui-kit';
 import { LucideIcon, type LucideIconComponent } from '../utils/lucide-dynamic';
 import { encodeReportPrefill } from '../utils/report-prefill';
@@ -935,6 +935,16 @@ export function Dashboards(props: DashboardsProps = {}) {
   const searchParams = useSearchParams();
   const searchParamsString = searchParams?.toString() || '';
 
+  // Use prop if provided, otherwise fall back to URL query param.
+  // NOTE: This MUST be declared before any hooks that reference `pack` in dependency arrays.
+  const pack = React.useMemo(() => {
+    if (packProp) return packProp.trim();
+    return (searchParams?.get('pack') || '').trim();
+  }, [packProp, searchParams]);
+  const defaultPacks = React.useMemo(() => ['crm', 'projects', 'marketing'], []);
+  const isDefaultPackMode = !pack;
+  const urlKey = React.useMemo(() => (searchParams?.get('key') || '').trim(), [searchParamsString]);
+
   const navigate = React.useCallback(
     (href: string) => {
       if (!href) return;
@@ -950,6 +960,50 @@ export function Dashboards(props: DashboardsProps = {}) {
         h.startsWith('mailto:') ||
         h.startsWith('tel:');
       if (isExternal && typeof window !== 'undefined') window.open(h, '_blank', 'noopener,noreferrer');
+    },
+    [onNavigate]
+  );
+
+  // -----------------------------------------------------------------------------
+  // Route drilldown panel (floating "module" to avoid navigating to unlisted pages)
+  // -----------------------------------------------------------------------------
+  const [routeDrillOpen, setRouteDrillOpen] = React.useState(false);
+  const [routeDrillMinimized, setRouteDrillMinimized] = React.useState(false);
+  const [routeDrillHref, setRouteDrillHref] = React.useState<string>('');
+  const [routeDrillTitle, setRouteDrillTitle] = React.useState<string>('Details');
+
+  const openRouteDrill = React.useCallback(
+    (args: { href: string; title?: string }) => {
+      const href = String(args.href || '').trim();
+      if (!href) return;
+      const isExternal =
+        href.startsWith('http://') ||
+        href.startsWith('https://') ||
+        href.startsWith('mailto:') ||
+        href.startsWith('tel:');
+      if (isExternal) {
+        // External links should not be embedded.
+        navigate(href);
+        return;
+      }
+      // Embed internal paths in a floating panel.
+      setRouteDrillHref(href);
+      setRouteDrillTitle(String(args.title || 'Details'));
+      setRouteDrillOpen(true);
+      setRouteDrillMinimized(false);
+    },
+    [navigate]
+  );
+
+  const openFullRoute = React.useCallback(
+    (href: string) => {
+      const h = String(href || '').trim();
+      if (!h) return;
+      if (onNavigate) {
+        onNavigate(h);
+        return;
+      }
+      if (typeof window !== 'undefined') window.location.href = h;
     },
     [onNavigate]
   );
@@ -1106,16 +1160,6 @@ export function Dashboards(props: DashboardsProps = {}) {
     setDrillMenuOptions(Array.isArray(args.options) ? args.options : []);
     setDrillMenuOpen(true);
   }, []);
-
-
-  // Use prop if provided, otherwise fall back to URL query param.
-  const pack = React.useMemo(() => {
-    if (packProp) return packProp.trim();
-    return (searchParams?.get('pack') || '').trim();
-  }, [packProp, searchParams]);
-  const defaultPacks = React.useMemo(() => ['crm', 'projects', 'marketing'], []);
-  const isDefaultPackMode = !pack;
-  const urlKey = React.useMemo(() => (searchParams?.get('key') || '').trim(), [searchParamsString]);
 
   const didApplyUrlKeyRef = React.useRef(false);
 
@@ -2594,7 +2638,7 @@ export function Dashboards(props: DashboardsProps = {}) {
                           }
                         if (action?.href) {
                           const href = String(action.href);
-                          navigate(href);
+                          openRouteDrill({ href, title: String(action?.label || w.title || cat?.label || metricKey || 'Details') });
                         }
                         }}
                         onKeyDown={(e) => {
@@ -2659,8 +2703,10 @@ export function Dashboards(props: DashboardsProps = {}) {
                             className="kpi-action"
                             href={String(action.href)}
                             onClick={(e: any) => {
-                              // Prevent KPI card drilldown click handler from also firing.
+                              // Keep UX in-dashboard: open in the drill panel, not a full navigation.
+                              e.preventDefault();
                               e.stopPropagation?.();
+                              openRouteDrill({ href: String(action.href), title: String(action.label) });
                             }}
                           >
                             {String(action.label)}
@@ -2713,7 +2759,7 @@ export function Dashboards(props: DashboardsProps = {}) {
                 const onSliceClick = async (slice: any) => {
                   const href = typeof slice?.href === 'string' ? slice.href : '';
                   if (!href) return;
-                  navigate(href);
+                  openRouteDrill({ href, title: `${String(w.title || 'Chart')} • ${String(slice?.label || '')}`.trim() });
                 };
 
                 return (
@@ -2799,12 +2845,24 @@ export function Dashboards(props: DashboardsProps = {}) {
                                         style={{ borderTop: `1px solid ${colors.border.subtle}`, cursor: href ? 'pointer' : 'default' }}
                                         onClick={() => {
                                           if (!href) return;
-                                          navigate(href);
+                                          openRouteDrill({ href, title: `${String(w.title || 'Table')} • ${String(r?.name || r?.id || '')}`.trim() });
                                         }}
                                       >
                                         {cols.map((c: any, j: number) => (
                                           <td key={j} style={{ padding: '8px 10px', whiteSpace: 'nowrap' }}>
-                                            {j === 0 && href ? <a href={href} style={{ color: colors.accent.default, textDecoration: 'none' }}>{renderCell(r, c)}</a> : renderCell(r, c)}
+                                            {j === 0 && href ? (
+                                              <a
+                                                href={href}
+                                                style={{ color: colors.accent.default, textDecoration: 'none' }}
+                                                onClick={(e: any) => {
+                                                  e.preventDefault();
+                                                  e.stopPropagation?.();
+                                                  openRouteDrill({ href, title: `${String(w.title || 'Table')} • ${String(r?.name || r?.id || '')}`.trim() });
+                                                }}
+                                              >
+                                                {renderCell(r, c)}
+                                              </a>
+                                            ) : renderCell(r, c)}
                                           </td>
                                         ))}
                                       </tr>
@@ -2898,6 +2956,7 @@ export function Dashboards(props: DashboardsProps = {}) {
                 disabled={!definition}
                 loading={sharesLoading}
                 error={sharesError}
+                fetchPrincipals={createFetchPrincipals({ isAdmin: true })}
                 entries={shares.map((s) => ({
                   id: s.id,
                   principalType: s.principalType,
@@ -3045,6 +3104,114 @@ export function Dashboards(props: DashboardsProps = {}) {
             )}
           </div>
         </Modal>
+
+        {/* Floating route drill panel (minimizable) */}
+        {routeDrillOpen ? (
+          routeDrillMinimized ? (
+            <div
+              role="button"
+              tabIndex={0}
+              onClick={() => setRouteDrillMinimized(false)}
+              onKeyDown={(e) => {
+                if (e.key !== 'Enter' && e.key !== ' ') return;
+                e.preventDefault();
+                setRouteDrillMinimized(false);
+              }}
+              style={{
+                position: 'fixed',
+                right: 16,
+                bottom: 16,
+                zIndex: 100000,
+                minWidth: 260,
+                maxWidth: 'min(520px, calc(100vw - 32px))',
+                padding: '10px 12px',
+                borderRadius: 14,
+                border: `1px solid ${colors.border.subtle}`,
+                background: colors.bg.muted,
+                boxShadow: '0 24px 48px rgba(0,0,0,0.35)',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 10,
+              }}
+              title="Click to expand"
+            >
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontWeight: 700, fontSize: 12, opacity: 0.8 }}>Drilldown</div>
+                <div style={{ fontWeight: 700, fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {routeDrillTitle || 'Details'}
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <Button
+                  variant="secondary"
+                  onClick={(e: any) => {
+                    e.stopPropagation?.();
+                    setRouteDrillOpen(false);
+                  }}
+                >
+                  Close
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div
+              style={{
+                position: 'fixed',
+                top: 0,
+                right: 0,
+                height: '100vh',
+                width: 'min(860px, 96vw)',
+                zIndex: 100000,
+                background: colors.bg.surface,
+                borderLeft: `1px solid ${colors.border.subtle}`,
+                display: 'flex',
+                flexDirection: 'column',
+                boxShadow: '0 24px 48px rgba(0,0,0,0.35)',
+              }}
+            >
+              <div
+                style={{
+                  padding: '10px 12px',
+                  borderBottom: `1px solid ${colors.border.subtle}`,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 10,
+                  background: colors.bg.muted,
+                }}
+              >
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontWeight: 800, fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {routeDrillTitle || 'Details'}
+                  </div>
+                  <div style={{ fontSize: 11, color: colors.text.muted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {routeDrillHref}
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <Button variant="secondary" onClick={() => setRouteDrillMinimized(true)}>
+                    Minimize
+                  </Button>
+                  <Button variant="secondary" onClick={() => openFullRoute(routeDrillHref)}>
+                    Open full page
+                  </Button>
+                  <Button variant="secondary" onClick={() => setRouteDrillOpen(false)}>
+                    Close
+                  </Button>
+                </div>
+              </div>
+              <div style={{ flex: 1, background: colors.bg.surface }}>
+                <iframe
+                  key={routeDrillHref}
+                  src={routeDrillHref}
+                  style={{ width: '100%', height: '100%', border: 0, background: colors.bg.surface }}
+                />
+              </div>
+            </div>
+          )
+        ) : null}
       </div>
     </Page>
   );

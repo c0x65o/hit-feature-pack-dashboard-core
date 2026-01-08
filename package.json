@@ -1,6 +1,6 @@
 {
   "name": "@hit/feature-pack-dashboard-core",
-  "version": "1.0.15",
+  "version": "1.0.16",
   "description": "A HIT feature pack",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -44,6 +44,7 @@
     "zod": "^4.3.2"
   },
   "peerDependencies": {
+    "@hit/feature-pack-auth-core": "*",
     "@hit/sdk": "*",
     "@hit/ui-kit": "*",
     "drizzle-orm": "^0.38.0",
@@ -55,6 +56,7 @@
     "react-resizable": "^3.0.5"
   },
   "devDependencies": {
+    "@hit/feature-pack-auth-core": "file:../hit-feature-pack-auth-core",
     "@hit/sdk": "file:../../../hit-sdks/hit-sdk-typescript",
     "@hit/ui-kit": "file:../../../packages/hit-ui-kit-ts",
     "@types/node": "^20",

@@ -16,6 +16,10 @@ schema:
 
 api:
   routes:
+    - path: /api/dashboard-templates
+      methods: [GET]
+      handler: "@hit/feature-pack-dashboard-core/server/api/dashboard-templates"
+      description: "List dashboard templates compiled by hit run into .hit/generated/dashboard-templates.json"
     - path: /api/dashboard-definitions
       methods: [GET, POST]
       handler: "@hit/feature-pack-dashboard-core/server/api/dashboard-definitions"

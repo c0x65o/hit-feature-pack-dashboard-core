@@ -3,7 +3,7 @@ import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { sql } from 'drizzle-orm';
 import { extractUserFromRequest } from '../auth';
-import { resolveUserPrincipals } from '@/lib/acl-utils';
+import { resolveUserPrincipals } from '@hit/feature-pack-auth-core/server/lib/acl-utils';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 export async function GET(request, { params }) {

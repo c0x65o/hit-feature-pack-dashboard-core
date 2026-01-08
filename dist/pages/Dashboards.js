@@ -2,8 +2,8 @@
 import { jsx as _jsx, jsxs as _jsxs, Fragment as _Fragment } from "react/jsx-runtime";
 import React from 'react';
 import { useSearchParams } from 'next/navigation';
-import { useUi } from '@hit/ui-kit';
-import { AclPicker } from '@hit/ui-kit';
+import { useUi, AclPicker } from '@hit/ui-kit';
+import { createFetchPrincipals } from '@hit/feature-pack-auth-core';
 import { useThemeTokens } from '@hit/ui-kit';
 import { LucideIcon } from '../utils/lucide-dynamic';
 import { encodeReportPrefill } from '../utils/report-prefill';
@@ -575,6 +575,16 @@ export function Dashboards(props = {}) {
     const { colors, radius } = useThemeTokens();
     const searchParams = useSearchParams();
     const searchParamsString = searchParams?.toString() || '';
+    // Use prop if provided, otherwise fall back to URL query param.
+    // NOTE: This MUST be declared before any hooks that reference `pack` in dependency arrays.
+    const pack = React.useMemo(() => {
+        if (packProp)
+            return packProp.trim();
+        return (searchParams?.get('pack') || '').trim();
+    }, [packProp, searchParams]);
+    const defaultPacks = React.useMemo(() => ['crm', 'projects', 'marketing'], []);
+    const isDefaultPackMode = !pack;
+    const urlKey = React.useMemo(() => (searchParams?.get('key') || '').trim(), [searchParamsString]);
     const navigate = React.useCallback((href) => {
         if (!href)
             return;
@@ -590,6 +600,43 @@ export function Dashboards(props = {}) {
             h.startsWith('tel:');
         if (isExternal && typeof window !== 'undefined')
             window.open(h, '_blank', 'noopener,noreferrer');
+    }, [onNavigate]);
+    // -----------------------------------------------------------------------------
+    // Route drilldown panel (floating "module" to avoid navigating to unlisted pages)
+    // -----------------------------------------------------------------------------
+    const [routeDrillOpen, setRouteDrillOpen] = React.useState(false);
+    const [routeDrillMinimized, setRouteDrillMinimized] = React.useState(false);
+    const [routeDrillHref, setRouteDrillHref] = React.useState('');
+    const [routeDrillTitle, setRouteDrillTitle] = React.useState('Details');
+    const openRouteDrill = React.useCallback((args) => {
+        const href = String(args.href || '').trim();
+        if (!href)
+            return;
+        const isExternal = href.startsWith('http://') ||
+            href.startsWith('https://') ||
+            href.startsWith('mailto:') ||
+            href.startsWith('tel:');
+        if (isExternal) {
+            // External links should not be embedded.
+            navigate(href);
+            return;
+        }
+        // Embed internal paths in a floating panel.
+        setRouteDrillHref(href);
+        setRouteDrillTitle(String(args.title || 'Details'));
+        setRouteDrillOpen(true);
+        setRouteDrillMinimized(false);
+    }, [navigate]);
+    const openFullRoute = React.useCallback((href) => {
+        const h = String(href || '').trim();
+        if (!h)
+            return;
+        if (onNavigate) {
+            onNavigate(h);
+            return;
+        }
+        if (typeof window !== 'undefined')
+            window.location.href = h;
     }, [onNavigate]);
     const [list, setList] = React.useState([]);
     const [selectedKey, setSelectedKey] = React.useState('');
@@ -720,15 +767,6 @@ export function Dashboards(props = {}) {
         setDrillMenuOptions(Array.isArray(args.options) ? args.options : []);
         setDrillMenuOpen(true);
     }, []);
-    // Use prop if provided, otherwise fall back to URL query param.
-    const pack = React.useMemo(() => {
-        if (packProp)
-            return packProp.trim();
-        return (searchParams?.get('pack') || '').trim();
-    }, [packProp, searchParams]);
-    const defaultPacks = React.useMemo(() => ['crm', 'projects', 'marketing'], []);
-    const isDefaultPackMode = !pack;
-    const urlKey = React.useMemo(() => (searchParams?.get('key') || '').trim(), [searchParamsString]);
     const didApplyUrlKeyRef = React.useRef(false);
     const range = React.useMemo(() => {
         if (preset === 'custom') {
@@ -2060,7 +2098,7 @@ export function Dashboards(props = {}) {
                                                     }
                                                     if (action?.href) {
                                                         const href = String(action.href);
-                                                        navigate(href);
+                                                        openRouteDrill({ href, title: String(action?.label || w.title || cat?.label || metricKey || 'Details') });
                                                     }
                                                 }, onKeyDown: (e) => {
                                                     if (!canDrill)
@@ -2104,8 +2142,10 @@ export function Dashboards(props = {}) {
                                                                     background: colors.bg.muted,
                                                                     color: iconColor,
                                                                 }, children: _jsx(Icon, { size: 22, style: { color: iconColor } }) })) : null] }), prev !== null ? (_jsxs("div", { className: "kpi-delta", children: [_jsx("span", { style: { color: pct >= 0 ? '#22c55e' : '#ef4444' }, children: formatNumber(pct, 'percent') }), _jsx("span", { style: { opacity: 0.7 }, children: "vs previous period" })] })) : null, action?.href && action?.label ? (_jsx("a", { className: "kpi-action", href: String(action.href), onClick: (e) => {
-                                                            // Prevent KPI card drilldown click handler from also firing.
+                                                            // Keep UX in-dashboard: open in the drill panel, not a full navigation.
+                                                            e.preventDefault();
                                                             e.stopPropagation?.();
+                                                            openRouteDrill({ href: String(action.href), title: String(action.label) });
                                                         }, children: String(action.label) })) : (_jsx("span", { className: "kpi-action kpi-action--placeholder", "aria-hidden": "true", children: "\u00A0" }))] }) }) }, w.key));
                                 }
                                 if (w.kind === 'pie') {
@@ -2130,7 +2170,7 @@ export function Dashboards(props = {}) {
                                         const href = typeof slice?.href === 'string' ? slice.href : '';
                                         if (!href)
                                             return;
-                                        navigate(href);
+                                        openRouteDrill({ href, title: `${String(w.title || 'Chart')} • ${String(slice?.label || '')}`.trim() });
                                     };
                                     return (_jsx("div", { className: spanClass, children: _jsx(Card, { title: w.title || 'Pie', children: _jsxs("div", { style: { padding: 14 }, children: [!st || st?.loading ? _jsx(Spinner, {}) : (error ? (_jsx("div", { style: { display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: 240 }, children: _jsxs("div", { style: { fontSize: 13, color: colors.text.muted, textAlign: 'center', maxWidth: 520 }, children: [_jsx("div", { style: { fontWeight: 600, color: colors.text.primary, marginBottom: 6 }, children: "Could not load chart" }), _jsx("div", { children: error }), _jsxs("div", { style: { marginTop: 8, fontSize: 12 }, children: ["Tip: open ", _jsx("code", { children: "/api/crm/reports/pipeline-health" }), " in a new tab to see the raw response."] })] }) })) : (_jsx(Donut, { slices: slices, format: format, onSliceClick: onSliceClick }))), st && !st?.loading && slices.some((s) => s?.raw === '__other__') ? (_jsxs("div", { style: { marginTop: 10, fontSize: 12, color: colors.text.muted }, children: ["Tip: \"", otherLabel, "\" is an aggregate bucket; click named slices to open filtered lists."] })) : null] }) }) }, w.key));
                                 }
@@ -2164,8 +2204,12 @@ export function Dashboards(props = {}) {
                                                                                 return (_jsx("tr", { style: { borderTop: `1px solid ${colors.border.subtle}`, cursor: href ? 'pointer' : 'default' }, onClick: () => {
                                                                                         if (!href)
                                                                                             return;
-                                                                                        navigate(href);
-                                                                                    }, children: cols.map((c, j) => (_jsx("td", { style: { padding: '8px 10px', whiteSpace: 'nowrap' }, children: j === 0 && href ? _jsx("a", { href: href, style: { color: colors.accent.default, textDecoration: 'none' }, children: renderCell(r, c) }) : renderCell(r, c) }, j))) }, String(r?.id || idx)));
+                                                                                        openRouteDrill({ href, title: `${String(w.title || 'Table')} • ${String(r?.name || r?.id || '')}`.trim() });
+                                                                                    }, children: cols.map((c, j) => (_jsx("td", { style: { padding: '8px 10px', whiteSpace: 'nowrap' }, children: j === 0 && href ? (_jsx("a", { href: href, style: { color: colors.accent.default, textDecoration: 'none' }, onClick: (e) => {
+                                                                                                e.preventDefault();
+                                                                                                e.stopPropagation?.();
+                                                                                                openRouteDrill({ href, title: `${String(w.title || 'Table')} • ${String(r?.name || r?.id || '')}`.trim() });
+                                                                                            }, children: renderCell(r, c) })) : renderCell(r, c) }, j))) }, String(r?.id || idx)));
                                                                             }), rows.length === 0 ? (_jsx("tr", { children: _jsx("td", { colSpan: Math.max(1, cols.length), style: { padding: '10px', color: colors.text.muted }, children: "No rows" }) })) : null] })] }) })] })) }) }) }, w.key));
                                 }
                                 if (w.kind === 'line') {
@@ -2185,7 +2229,7 @@ export function Dashboards(props = {}) {
                                         mode: 'granular',
                                         principals: { users: true, groups: true, roles: true },
                                         granularPermissions: [{ key: 'READ', label: 'Read' }],
-                                    }, disabled: !definition, loading: sharesLoading, error: sharesError, entries: shares.map((s) => ({
+                                    }, disabled: !definition, loading: sharesLoading, error: sharesError, fetchPrincipals: createFetchPrincipals({ isAdmin: true }), entries: shares.map((s) => ({
                                         id: s.id,
                                         principalType: s.principalType,
                                         principalId: s.principalId,
@@ -2220,6 +2264,51 @@ export function Dashboards(props = {}) {
                                                                 const prefill = encodeReportPrefill({ title: drillTitle, format: drillFormat, pointFilter: drillLastFilter });
                                                                 const href = `/reports/builder?prefill=${prefill}`;
                                                                 navigate(href);
-                                                            }, children: "Open in Report Writer" }), _jsx(Button, { variant: "secondary", disabled: drillLoading || drillPagination.page <= 1 || !drillLastFilter, onClick: () => drillLastFilter && runDrilldown({ pointFilter: drillLastFilter, title: drillTitle, format: drillFormat, page: drillPagination.page - 1 }), children: "Prev" }), _jsx(Button, { variant: "secondary", disabled: drillLoading || !drillLastFilter || (drillPagination.page * drillPagination.pageSize) >= drillPagination.total, onClick: () => drillLastFilter && runDrilldown({ pointFilter: drillLastFilter, title: drillTitle, format: drillFormat, page: drillPagination.page + 1 }), children: "Next" })] })] }), _jsx("div", { style: { overflowX: 'auto', border: `1px solid ${colors.border.subtle}`, borderRadius: 10 }, children: _jsxs("table", { style: { width: '100%', borderCollapse: 'collapse', fontSize: 12 }, children: [_jsx("thead", { children: _jsxs("tr", { style: { textAlign: 'left', background: colors.bg.muted }, children: [_jsx("th", { style: { padding: '8px 10px' }, children: "Date" }), _jsx("th", { style: { padding: '8px 10px' }, children: "Value" }), _jsx("th", { style: { padding: '8px 10px' }, children: "Entity" }), _jsx("th", { style: { padding: '8px 10px' }, children: "Data Source" }), _jsx("th", { style: { padding: '8px 10px' }, children: "Dimensions" })] }) }), _jsx("tbody", { children: drillPoints.length === 0 ? (_jsx("tr", { children: _jsx("td", { colSpan: 5, style: { padding: 12, color: colors.text.muted }, children: "No points found." }) })) : drillPoints.map((p) => (_jsxs("tr", { style: { borderTop: `1px solid ${colors.border.subtle}` }, children: [_jsx("td", { style: { padding: '8px 10px', whiteSpace: 'nowrap' }, children: String(p.date || '') }), _jsx("td", { style: { padding: '8px 10px', whiteSpace: 'nowrap' }, children: formatNumber(Number(p.value ?? 0), drillFormat) }), _jsxs("td", { style: { padding: '8px 10px', whiteSpace: 'nowrap' }, children: [_jsx("span", { style: { color: colors.text.muted }, children: String(p.entityKind || '') }), _jsx("span", { children: ":" }), _jsx("span", { style: { marginLeft: 6 }, children: String(p.entityId || '') })] }), _jsx("td", { style: { padding: '8px 10px', whiteSpace: 'nowrap' }, children: String(p.dataSourceId || '') }), _jsx("td", { style: { padding: '8px 10px' }, children: _jsx("code", { style: { fontSize: 11 }, children: JSON.stringify(p.dimensions || {}) }) })] }, String(p.id)))) })] }) })] }))] }) })] })] }));
+                                                            }, children: "Open in Report Writer" }), _jsx(Button, { variant: "secondary", disabled: drillLoading || drillPagination.page <= 1 || !drillLastFilter, onClick: () => drillLastFilter && runDrilldown({ pointFilter: drillLastFilter, title: drillTitle, format: drillFormat, page: drillPagination.page - 1 }), children: "Prev" }), _jsx(Button, { variant: "secondary", disabled: drillLoading || !drillLastFilter || (drillPagination.page * drillPagination.pageSize) >= drillPagination.total, onClick: () => drillLastFilter && runDrilldown({ pointFilter: drillLastFilter, title: drillTitle, format: drillFormat, page: drillPagination.page + 1 }), children: "Next" })] })] }), _jsx("div", { style: { overflowX: 'auto', border: `1px solid ${colors.border.subtle}`, borderRadius: 10 }, children: _jsxs("table", { style: { width: '100%', borderCollapse: 'collapse', fontSize: 12 }, children: [_jsx("thead", { children: _jsxs("tr", { style: { textAlign: 'left', background: colors.bg.muted }, children: [_jsx("th", { style: { padding: '8px 10px' }, children: "Date" }), _jsx("th", { style: { padding: '8px 10px' }, children: "Value" }), _jsx("th", { style: { padding: '8px 10px' }, children: "Entity" }), _jsx("th", { style: { padding: '8px 10px' }, children: "Data Source" }), _jsx("th", { style: { padding: '8px 10px' }, children: "Dimensions" })] }) }), _jsx("tbody", { children: drillPoints.length === 0 ? (_jsx("tr", { children: _jsx("td", { colSpan: 5, style: { padding: 12, color: colors.text.muted }, children: "No points found." }) })) : drillPoints.map((p) => (_jsxs("tr", { style: { borderTop: `1px solid ${colors.border.subtle}` }, children: [_jsx("td", { style: { padding: '8px 10px', whiteSpace: 'nowrap' }, children: String(p.date || '') }), _jsx("td", { style: { padding: '8px 10px', whiteSpace: 'nowrap' }, children: formatNumber(Number(p.value ?? 0), drillFormat) }), _jsxs("td", { style: { padding: '8px 10px', whiteSpace: 'nowrap' }, children: [_jsx("span", { style: { color: colors.text.muted }, children: String(p.entityKind || '') }), _jsx("span", { children: ":" }), _jsx("span", { style: { marginLeft: 6 }, children: String(p.entityId || '') })] }), _jsx("td", { style: { padding: '8px 10px', whiteSpace: 'nowrap' }, children: String(p.dataSourceId || '') }), _jsx("td", { style: { padding: '8px 10px' }, children: _jsx("code", { style: { fontSize: 11 }, children: JSON.stringify(p.dimensions || {}) }) })] }, String(p.id)))) })] }) })] }))] }) }), routeDrillOpen ? (routeDrillMinimized ? (_jsxs("div", { role: "button", tabIndex: 0, onClick: () => setRouteDrillMinimized(false), onKeyDown: (e) => {
+                            if (e.key !== 'Enter' && e.key !== ' ')
+                                return;
+                            e.preventDefault();
+                            setRouteDrillMinimized(false);
+                        }, style: {
+                            position: 'fixed',
+                            right: 16,
+                            bottom: 16,
+                            zIndex: 100000,
+                            minWidth: 260,
+                            maxWidth: 'min(520px, calc(100vw - 32px))',
+                            padding: '10px 12px',
+                            borderRadius: 14,
+                            border: `1px solid ${colors.border.subtle}`,
+                            background: colors.bg.muted,
+                            boxShadow: '0 24px 48px rgba(0,0,0,0.35)',
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            gap: 10,
+                        }, title: "Click to expand", children: [_jsxs("div", { style: { minWidth: 0 }, children: [_jsx("div", { style: { fontWeight: 700, fontSize: 12, opacity: 0.8 }, children: "Drilldown" }), _jsx("div", { style: { fontWeight: 700, fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }, children: routeDrillTitle || 'Details' })] }), _jsx("div", { style: { display: 'flex', gap: 8, alignItems: 'center' }, children: _jsx(Button, { variant: "secondary", onClick: (e) => {
+                                        e.stopPropagation?.();
+                                        setRouteDrillOpen(false);
+                                    }, children: "Close" }) })] })) : (_jsxs("div", { style: {
+                            position: 'fixed',
+                            top: 0,
+                            right: 0,
+                            height: '100vh',
+                            width: 'min(860px, 96vw)',
+                            zIndex: 100000,
+                            background: colors.bg.surface,
+                            borderLeft: `1px solid ${colors.border.subtle}`,
+                            display: 'flex',
+                            flexDirection: 'column',
+                            boxShadow: '0 24px 48px rgba(0,0,0,0.35)',
+                        }, children: [_jsxs("div", { style: {
+                                    padding: '10px 12px',
+                                    borderBottom: `1px solid ${colors.border.subtle}`,
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'space-between',
+                                    gap: 10,
+                                    background: colors.bg.muted,
+                                }, children: [_jsxs("div", { style: { minWidth: 0 }, children: [_jsx("div", { style: { fontWeight: 800, fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }, children: routeDrillTitle || 'Details' }), _jsx("div", { style: { fontSize: 11, color: colors.text.muted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }, children: routeDrillHref })] }), _jsxs("div", { style: { display: 'flex', gap: 8, alignItems: 'center' }, children: [_jsx(Button, { variant: "secondary", onClick: () => setRouteDrillMinimized(true), children: "Minimize" }), _jsx(Button, { variant: "secondary", onClick: () => openFullRoute(routeDrillHref), children: "Open full page" }), _jsx(Button, { variant: "secondary", onClick: () => setRouteDrillOpen(false), children: "Close" })] })] }), _jsx("div", { style: { flex: 1, background: colors.bg.surface }, children: _jsx("iframe", { src: routeDrillHref, style: { width: '100%', height: '100%', border: 0, background: colors.bg.surface } }, routeDrillHref) })] }))) : null] })] }));
 }
 export default Dashboards;

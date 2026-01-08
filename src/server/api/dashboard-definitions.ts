@@ -4,7 +4,9 @@ import { getDb } from '@/lib/db';
 import { sql } from 'drizzle-orm';
 import { extractUserFromRequest } from '../auth';
 import crypto from 'node:crypto';
-import { resolveUserPrincipals } from '@/lib/acl-utils';
+import { resolveUserPrincipals } from '@hit/feature-pack-auth-core/server/lib/acl-utils';
+import fs from 'node:fs';
+import path from 'node:path';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -127,10 +129,98 @@ export async function GET(request: NextRequest) {
 }
 
 async function ensureDefaultPackDashboards(db: any, pack: string) {
-  const p = String(pack || '').trim();
-  if (!p) return;
+  const requestedPack = String(pack || '').trim();
 
+  // Prefer pack-owned templates compiled by `hit run` into `.hit/generated/dashboard-templates.json`.
+  // This allows each feature pack to ship templates without requiring changes to dashboard-core.
+  //
+  // IMPORTANT: We auto-install templates for *all enabled packs* (not just the requested pack).
+  // This keeps new packs “just working” everywhere without requiring manual SQL copy/paste.
+  try {
+    const registryPath = path.join(process.cwd(), '.hit', 'generated', 'dashboard-templates.json');
+    if (fs.existsSync(registryPath)) {
+      const raw = fs.readFileSync(registryPath, 'utf8');
+      const reg = JSON.parse(raw);
+      const templatesAll = Array.isArray(reg?.templates) ? (reg.templates as any[]) : [];
+      const templates = templatesAll
+        .map((t: any) => ({
+          ...t,
+          packName: String(t?.packName || '').trim(),
+          templateKey: String(t?.templateKey || '').trim(),
+        }))
+        .filter((t: any) => t.packName && t.templateKey);
+
+      if (templates.length > 0) {
+        const now = new Date();
+        for (const t of templates) {
+          const templatePack = String(t?.packName || '').trim();
+          if (!templatePack) continue;
+
+          // If the endpoint is pack-scoped, we can skip unrelated templates.
+          // But if requestedPack is empty, we install all templates.
+          if (requestedPack && templatePack !== requestedPack) continue;
+
+          const key = String(t?.templateKey || '').trim();
+          const name = String(t?.title || key || `${templatePack} dashboard`).trim();
+          const description = t?.description != null ? String(t.description) : null;
+          const version = Number.isFinite(Number(t?.version)) ? Number(t.version) : 0;
+          const definition = normalizeDefinition(t?.definition);
+          const scope = { kind: 'pack', pack: templatePack };
+
+          if (!key || !name) continue;
+
+          await db.execute(sql`
+            insert into "dashboard_definitions" (
+              id,
+              key,
+              owner_user_id,
+              is_system,
+              name,
+              description,
+              visibility,
+              scope,
+              version,
+              definition,
+              created_at,
+              updated_at
+            ) values (
+              gen_random_uuid(),
+              ${key},
+              'system',
+              true,
+              ${name},
+              ${description},
+              'public',
+              ${JSON.stringify(scope)}::jsonb,
+              ${version},
+              ${JSON.stringify(definition)}::jsonb,
+              ${now},
+              ${now}
+            )
+            on conflict (key) do update set
+              name = excluded.name,
+              description = excluded.description,
+              visibility = excluded.visibility,
+              scope = excluded.scope,
+              version = excluded.version,
+              definition = excluded.definition,
+              updated_at = excluded.updated_at
+            where
+              "dashboard_definitions".is_system = true
+              and excluded.version >= "dashboard_definitions".version
+          `);
+        }
+        return;
+      }
+    }
+  } catch {
+    // ignore and fall back to legacy seeding below
+  }
+
+  // Legacy fallback (pre-template registry). Kept for compatibility while packs migrate templates.
   // Only seed for the packs we want as default business dashboards.
+  const p = requestedPack;
+  if (!p) return;
   if (p !== 'crm' && p !== 'projects') return;
 
   const now = new Date();
