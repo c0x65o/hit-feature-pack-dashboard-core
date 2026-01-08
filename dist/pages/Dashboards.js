@@ -195,10 +195,52 @@ function Donut({ slices, format, onSliceClick, }) {
     const cy = 120;
     const rOuter = 100;
     const rInner = 62;
+    // SVG arc commands can't render a true 360° arc (start=end is treated as "no arc").
+    // If a slice is effectively 100% (common when there is only one non-zero item),
+    // draw it as two 180° arcs so it renders as a full circle.
+    const TAU = Math.PI * 2;
+    const EPS = 1e-6;
     let startAngle = -Math.PI / 2;
-    const paths = slices.map((s) => {
-        const frac = Math.max(0, Math.min(1, s.value / total));
-        const endAngle = startAngle + frac * Math.PI * 2;
+    const paths = [];
+    for (const s of slices) {
+        const rawVal = Number.isFinite(s.value) ? s.value : 0;
+        const frac = Math.max(0, Math.min(1, rawVal / total));
+        if (frac <= EPS)
+            continue;
+        const sweep = frac * TAU;
+        // Full circle (or extremely close)
+        if (sweep >= TAU - EPS) {
+            const a1 = startAngle;
+            const a2 = startAngle + Math.PI;
+            const a3 = startAngle + TAU;
+            const x1 = cx + rOuter * Math.cos(a1);
+            const y1 = cy + rOuter * Math.sin(a1);
+            const x2 = cx + rOuter * Math.cos(a2);
+            const y2 = cy + rOuter * Math.sin(a2);
+            const x3 = cx + rOuter * Math.cos(a3);
+            const y3 = cy + rOuter * Math.sin(a3);
+            const xi3 = cx + rInner * Math.cos(a3);
+            const yi3 = cy + rInner * Math.sin(a3);
+            const xi2 = cx + rInner * Math.cos(a2);
+            const yi2 = cy + rInner * Math.sin(a2);
+            const xi1 = cx + rInner * Math.cos(a1);
+            const yi1 = cy + rInner * Math.sin(a1);
+            const d = [
+                `M ${x1} ${y1}`,
+                // Outer ring: two 180° arcs, clockwise
+                `A ${rOuter} ${rOuter} 0 0 1 ${x2} ${y2}`,
+                `A ${rOuter} ${rOuter} 0 0 1 ${x3} ${y3}`,
+                `L ${xi3} ${yi3}`,
+                // Inner ring: two 180° arcs, counter-clockwise
+                `A ${rInner} ${rInner} 0 0 0 ${xi2} ${yi2}`,
+                `A ${rInner} ${rInner} 0 0 0 ${xi1} ${yi1}`,
+                'Z',
+            ].join(' ');
+            paths.push({ ...s, d });
+            startAngle = a3;
+            continue;
+        }
+        const endAngle = startAngle + sweep;
         const large = endAngle - startAngle > Math.PI ? 1 : 0;
         const x1 = cx + rOuter * Math.cos(startAngle);
         const y1 = cy + rOuter * Math.sin(startAngle);
@@ -215,9 +257,9 @@ function Donut({ slices, format, onSliceClick, }) {
             `A ${rInner} ${rInner} 0 ${large} 0 ${x4} ${y4}`,
             'Z',
         ].join(' ');
+        paths.push({ ...s, d });
         startAngle = endAngle;
-        return { ...s, d };
-    });
+    }
     const wrapRef = React.useRef(null);
     const [hovered, setHovered] = React.useState(null);
     const [mouse, setMouse] = React.useState(null);
