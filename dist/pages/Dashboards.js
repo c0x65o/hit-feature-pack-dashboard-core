@@ -723,6 +723,24 @@ export function Dashboards(props = {}) {
             render: renderMaybe(k),
         }));
     }
+    function inferInitialColumnVisibilityFromRows(rows) {
+        const first = rows && rows.length ? rows[0] : null;
+        const keys = first && typeof first === 'object' && !Array.isArray(first) ? Object.keys(first) : [];
+        const out = {};
+        const isIdLike = (k) => {
+            const s = String(k || '').trim();
+            if (!s)
+                return false;
+            // Hide common ID-ish columns by default; users can re-enable via Columns menu.
+            // Examples: id, pipelineStageId, likelihood_type_id
+            return s.toLowerCase() === 'id' || /(^|[_-])id$/i.test(s) || /id$/i.test(s);
+        };
+        for (const k of keys) {
+            if (isIdLike(k))
+                out[k] = false;
+        }
+        return out;
+    }
     const openRouteDrill = React.useCallback((args) => {
         const href = String(args.href || '').trim();
         if (!href)
@@ -2508,7 +2526,7 @@ export function Dashboards(props = {}) {
                                     justifyContent: 'space-between',
                                     gap: 10,
                                     background: colors.bg.muted,
-                                }, children: [_jsxs("div", { style: { minWidth: 0 }, children: [_jsx("div", { style: { fontWeight: 800, fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }, children: routeDrillTitle || 'Details' }), _jsx("div", { style: { fontSize: 11, color: colors.text.muted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }, children: routeDrillHref })] }), _jsxs("div", { style: { display: 'flex', gap: 8, alignItems: 'center' }, children: [_jsx(Button, { variant: "secondary", onClick: () => setRouteDrillMinimized(true), children: "Minimize" }), _jsx(Button, { variant: "secondary", onClick: () => openFullRoute(routeDrillHref), children: "Open full page" }), _jsx(Button, { variant: "secondary", onClick: () => setRouteDrillOpen(false), children: "Close" })] })] }), _jsx("div", { style: { flex: 1, background: colors.bg.surface }, children: _jsx("div", { style: { padding: 12 }, children: routeDrillError ? (_jsxs("div", { style: { padding: 12, color: '#ef4444', fontSize: 13 }, children: [_jsx("div", { style: { fontWeight: 700, marginBottom: 6 }, children: "Could not load table" }), _jsx("div", { style: { opacity: 0.9 }, children: routeDrillError }), _jsx("div", { style: { marginTop: 10 }, children: _jsx(Button, { variant: "secondary", onClick: () => openFullRoute(routeDrillHref), children: "Open full page instead" }) })] })) : (_jsx(Card, { title: "Results", description: "Fast drilldown table (no page wrapper).", children: _jsx("div", { style: { padding: 12 }, children: _jsx(DataTable, { columns: inferColumnsFromRows(routeDrillRows), data: Array.isArray(routeDrillRows) ? routeDrillRows : [], loading: routeDrillLoading, emptyMessage: "No rows found", manualPagination: true, page: routeDrillPage, pageSize: routeDrillPageSize, total: routeDrillTotal, onPageChange: (p) => setRouteDrillPage(p), onPageSizeChange: (ps) => setRouteDrillPageSize(ps), onSearchChange: (q) => setRouteDrillSearch(q), searchable: true, exportable: false, showColumnVisibility: true, showRefresh: true, onRefresh: () => {
+                                }, children: [_jsxs("div", { style: { minWidth: 0 }, children: [_jsx("div", { style: { fontWeight: 800, fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }, children: routeDrillTitle || 'Details' }), _jsx("div", { style: { fontSize: 11, color: colors.text.muted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }, children: routeDrillHref })] }), _jsxs("div", { style: { display: 'flex', gap: 8, alignItems: 'center' }, children: [_jsx(Button, { variant: "secondary", onClick: () => setRouteDrillMinimized(true), children: "Minimize" }), _jsx(Button, { variant: "secondary", onClick: () => openFullRoute(routeDrillHref), children: "Open full page" }), _jsx(Button, { variant: "secondary", onClick: () => setRouteDrillOpen(false), children: "Close" })] })] }), _jsx("div", { style: { flex: 1, background: colors.bg.surface }, children: _jsx("div", { style: { padding: 12 }, children: routeDrillError ? (_jsxs("div", { style: { padding: 12, color: '#ef4444', fontSize: 13 }, children: [_jsx("div", { style: { fontWeight: 700, marginBottom: 6 }, children: "Could not load table" }), _jsx("div", { style: { opacity: 0.9 }, children: routeDrillError }), _jsx("div", { style: { marginTop: 10 }, children: _jsx(Button, { variant: "secondary", onClick: () => openFullRoute(routeDrillHref), children: "Open full page instead" }) })] })) : (_jsx(Card, { title: "Results", description: "Fast drilldown table (no page wrapper).", children: _jsx("div", { style: { padding: 12 }, children: _jsx(DataTable, { columns: inferColumnsFromRows(routeDrillRows), data: Array.isArray(routeDrillRows) ? routeDrillRows : [], loading: routeDrillLoading, emptyMessage: "No rows found", initialColumnVisibility: inferInitialColumnVisibilityFromRows(routeDrillRows), manualPagination: true, page: routeDrillPage, pageSize: routeDrillPageSize, total: routeDrillTotal, onPageChange: (p) => setRouteDrillPage(p), onPageSizeChange: (ps) => setRouteDrillPageSize(ps), onSearchChange: (q) => setRouteDrillSearch(q), searchable: true, exportable: false, showColumnVisibility: true, showRefresh: true, onRefresh: () => {
                                                     // bump state by re-setting the page (forces effect rerun)
                                                     setRouteDrillPage((p) => p);
                                                 } }) }) })) }) })] }))) : null] })] }));

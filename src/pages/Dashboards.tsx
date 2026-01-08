@@ -1083,6 +1083,23 @@ export function Dashboards(props: DashboardsProps = {}) {
     }));
   }
 
+  function inferInitialColumnVisibilityFromRows(rows: any[]): Record<string, boolean> {
+    const first = rows && rows.length ? rows[0] : null;
+    const keys = first && typeof first === 'object' && !Array.isArray(first) ? Object.keys(first) : [];
+    const out: Record<string, boolean> = {};
+    const isIdLike = (k: string) => {
+      const s = String(k || '').trim();
+      if (!s) return false;
+      // Hide common ID-ish columns by default; users can re-enable via Columns menu.
+      // Examples: id, pipelineStageId, likelihood_type_id
+      return s.toLowerCase() === 'id' || /(^|[_-])id$/i.test(s) || /id$/i.test(s);
+    };
+    for (const k of keys) {
+      if (isIdLike(k)) out[k] = false;
+    }
+    return out;
+  }
+
   const openRouteDrill = React.useCallback(
     (args: { href: string; title?: string }) => {
       const href = String(args.href || '').trim();
@@ -3408,6 +3425,7 @@ export function Dashboards(props: DashboardsProps = {}) {
                           data={Array.isArray(routeDrillRows) ? routeDrillRows : []}
                           loading={routeDrillLoading}
                           emptyMessage="No rows found"
+                          initialColumnVisibility={inferInitialColumnVisibilityFromRows(routeDrillRows)}
                           manualPagination
                           page={routeDrillPage}
                           pageSize={routeDrillPageSize}
