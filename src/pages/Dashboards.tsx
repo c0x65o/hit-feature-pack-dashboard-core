@@ -930,7 +930,7 @@ function fetchWithAuth(input: RequestInfo | URL, init?: RequestInit) {
 
 export function Dashboards(props: DashboardsProps = {}) {
   const { pack: packProp, dashboardKey: dashboardKeyProp, onNavigate } = props as any;
-  const { Page, Card, Button, Dropdown, Select, Input, Modal, Spinner, Badge } = useUi();
+  const { Page, Card, Button, Dropdown, Select, Input, Modal, Spinner, Badge, DataTable } = useUi();
   const { colors, radius } = useThemeTokens();
   const searchParams = useSearchParams();
   const searchParamsString = searchParams?.toString() || '';
@@ -971,6 +971,117 @@ export function Dashboards(props: DashboardsProps = {}) {
   const [routeDrillMinimized, setRouteDrillMinimized] = React.useState(false);
   const [routeDrillHref, setRouteDrillHref] = React.useState<string>('');
   const [routeDrillTitle, setRouteDrillTitle] = React.useState<string>('Details');
+  const [routeDrillQuery, setRouteDrillQuery] = React.useState<{ path: string; params: Record<string, string> } | null>(null);
+  const [routeDrillLoading, setRouteDrillLoading] = React.useState(false);
+  const [routeDrillError, setRouteDrillError] = React.useState<string | null>(null);
+  const [routeDrillRows, setRouteDrillRows] = React.useState<any[]>([]);
+  const [routeDrillTotal, setRouteDrillTotal] = React.useState<number | undefined>(undefined);
+  const [routeDrillPage, setRouteDrillPage] = React.useState<number>(1);
+  const [routeDrillPageSize, setRouteDrillPageSize] = React.useState<number>(25);
+  const [routeDrillSearch, setRouteDrillSearch] = React.useState<string>('');
+
+  function parseInternalHref(href: string): { path: string; params: Record<string, string> } | null {
+    const raw = String(href || '').trim();
+    if (!raw) return null;
+    if (raw.startsWith('http://') || raw.startsWith('https://') || raw.startsWith('mailto:') || raw.startsWith('tel:')) return null;
+    try {
+      // Support relative paths like "/crm/opportunities?pipelineStage=..."
+      const u = typeof window !== 'undefined' ? new URL(raw, window.location.origin) : new URL(`http://localhost${raw}`);
+      const params: Record<string, string> = {};
+      u.searchParams.forEach((v, k) => {
+        // keep last value if repeated; good enough for v0 drilldowns
+        params[String(k)] = String(v);
+      });
+      return { path: u.pathname, params };
+    } catch {
+      return null;
+    }
+  }
+
+  function inferItemsAndTotal(json: any): { items: any[]; total?: number } {
+    // Common patterns across feature packs:
+    // - { items: [], pagination: { total } }
+    // - { data: { items: [], pagination: { total } } }
+    // - { data: [] }
+    // - { items: [] }
+    const pickTotal = (x: any): number | undefined => {
+      const t = x?.pagination?.total ?? x?.page?.total ?? x?.meta?.total;
+      const n = Number(t);
+      return Number.isFinite(n) ? n : undefined;
+    };
+    if (json && typeof json === 'object') {
+      if (Array.isArray(json.items)) return { items: json.items, total: pickTotal(json) };
+      if (json.data && typeof json.data === 'object') {
+        if (Array.isArray(json.data.items)) return { items: json.data.items, total: pickTotal(json.data) ?? pickTotal(json) };
+        if (Array.isArray(json.data)) return { items: json.data, total: pickTotal(json) };
+      }
+      if (Array.isArray(json.data)) return { items: json.data, total: pickTotal(json) };
+    }
+    return { items: [], total: undefined };
+  }
+
+  function inferColumnsFromRows(rows: any[]): Array<{ key: string; label: string; sortable?: boolean; render?: (value: unknown, row: any) => any }> {
+    const first = rows && rows.length ? rows[0] : null;
+    const keys = first && typeof first === 'object' && !Array.isArray(first) ? Object.keys(first) : [];
+    const preferredOrder = [
+      'name',
+      'title',
+      'pipelineStageName',
+      'pipelineStage',
+      'amount',
+      'value',
+      'status',
+      'closeDateEstimate',
+      'createdOnTimestamp',
+      'lastUpdatedOnTimestamp',
+      'updatedAt',
+      'id',
+    ];
+    const seen = new Set<string>();
+    const ordered = [
+      ...preferredOrder.filter((k) => keys.includes(k)),
+      ...keys.filter((k) => !preferredOrder.includes(k)),
+    ]
+      .filter((k) => {
+        if (!k || seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      })
+      .slice(0, 10); // keep popup scannable
+
+    const labelize = (k: string) =>
+      String(k || '')
+        .replace(/([a-z])([A-Z])/g, '$1 $2')
+        .replace(/_/g, ' ')
+        .replace(/\b\w/g, (m) => m.toUpperCase());
+
+    const renderMaybe = (k: string) => {
+      const lk = k.toLowerCase();
+      if (lk.includes('amount') || lk.includes('value') || lk.endsWith('_usd')) {
+        return (v: unknown) => {
+          const n = typeof v === 'number' ? v : Number(v);
+          if (!Number.isFinite(n)) return v == null ? '—' : String(v);
+          return new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(n);
+        };
+      }
+      if (lk.includes('date') || lk.includes('timestamp') || lk.endsWith('at')) {
+        return (v: unknown) => {
+          if (!v) return '—';
+          const d = new Date(String(v));
+          if (!Number.isFinite(d.getTime())) return String(v);
+          return d.toLocaleString();
+        };
+      }
+      return undefined;
+    };
+
+    return ordered.map((k) => ({
+      key: k,
+      label: labelize(k),
+      sortable: false,
+      render: renderMaybe(k),
+    }));
+  }
 
   const openRouteDrill = React.useCallback(
     (args: { href: string; title?: string }) => {
@@ -989,6 +1100,11 @@ export function Dashboards(props: DashboardsProps = {}) {
       // Embed internal paths in a floating panel.
       setRouteDrillHref(href);
       setRouteDrillTitle(String(args.title || 'Details'));
+      setRouteDrillQuery(parseInternalHref(href));
+      setRouteDrillError(null);
+      setRouteDrillRows([]);
+      setRouteDrillTotal(undefined);
+      setRouteDrillPage(1);
       setRouteDrillOpen(true);
       setRouteDrillMinimized(false);
     },
@@ -1007,6 +1123,76 @@ export function Dashboards(props: DashboardsProps = {}) {
     },
     [onNavigate]
   );
+
+  // Fetch drill table rows from the corresponding /api path, converting query params into filters when needed.
+  React.useEffect(() => {
+    const q = routeDrillQuery;
+    if (!routeDrillOpen || routeDrillMinimized) return;
+    if (!q?.path) return;
+    let cancelled = false;
+
+    (async () => {
+      try {
+        setRouteDrillLoading(true);
+        setRouteDrillError(null);
+
+        // Heuristic: list API lives at /api + pathname
+        const apiPath = `/api${q.path}`;
+        const params = new URLSearchParams();
+        params.set('page', String(routeDrillPage));
+        params.set('pageSize', String(routeDrillPageSize));
+        if (routeDrillSearch) params.set('search', routeDrillSearch);
+
+        // If the href already includes a canonical filters= JSON payload, pass it through.
+        // Otherwise, treat remaining query params as simple equals filters.
+        const passthrough = q.params || {};
+        const reserved = new Set(['view', 'page', 'pageSize', 'search', 'sortBy', 'sortOrder', 'filterMode', 'filters']);
+        if (passthrough.sortBy) params.set('sortBy', String(passthrough.sortBy));
+        if (passthrough.sortOrder) params.set('sortOrder', String(passthrough.sortOrder));
+        if (passthrough.filterMode) params.set('filterMode', String(passthrough.filterMode));
+
+        let filtersJson = String(passthrough.filters || '').trim();
+        if (!filtersJson) {
+          const filters: Array<{ field: string; operator: string; value: any }> = [];
+          for (const [k, v] of Object.entries(passthrough)) {
+            if (reserved.has(k)) continue;
+            if (!k) continue;
+            if (v === '') continue;
+            filters.push({ field: k, operator: 'equals', value: v });
+          }
+          if (filters.length > 0) filtersJson = JSON.stringify(filters);
+        }
+        if (filtersJson) params.set('filters', filtersJson);
+
+        const res = await fetchWithAuth(`${apiPath}?${params.toString()}`);
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(json?.error || `${apiPath} ${res.status}`);
+
+        const { items, total } = inferItemsAndTotal(json);
+        if (cancelled) return;
+        setRouteDrillRows(items);
+        setRouteDrillTotal(total);
+      } catch (e) {
+        if (cancelled) return;
+        setRouteDrillRows([]);
+        setRouteDrillTotal(undefined);
+        setRouteDrillError(e instanceof Error ? e.message : String(e));
+      } finally {
+        if (!cancelled) setRouteDrillLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    routeDrillOpen,
+    routeDrillMinimized,
+    routeDrillQuery,
+    routeDrillPage,
+    routeDrillPageSize,
+    routeDrillSearch,
+  ]);
 
   const [list, setList] = React.useState<DashboardListItem[]>([]);
   const [selectedKey, setSelectedKey] = React.useState<string>('');
@@ -3203,11 +3389,45 @@ export function Dashboards(props: DashboardsProps = {}) {
                 </div>
               </div>
               <div style={{ flex: 1, background: colors.bg.surface }}>
-                <iframe
-                  key={routeDrillHref}
-                  src={routeDrillHref}
-                  style={{ width: '100%', height: '100%', border: 0, background: colors.bg.surface }}
-                />
+                <div style={{ padding: 12 }}>
+                  {routeDrillError ? (
+                    <div style={{ padding: 12, color: '#ef4444', fontSize: 13 }}>
+                      <div style={{ fontWeight: 700, marginBottom: 6 }}>Could not load table</div>
+                      <div style={{ opacity: 0.9 }}>{routeDrillError}</div>
+                      <div style={{ marginTop: 10 }}>
+                        <Button variant="secondary" onClick={() => openFullRoute(routeDrillHref)}>
+                          Open full page instead
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <Card title="Results" description="Fast drilldown table (no page wrapper).">
+                      <div style={{ padding: 12 }}>
+                        <DataTable
+                          columns={inferColumnsFromRows(routeDrillRows)}
+                          data={Array.isArray(routeDrillRows) ? routeDrillRows : []}
+                          loading={routeDrillLoading}
+                          emptyMessage="No rows found"
+                          manualPagination
+                          page={routeDrillPage}
+                          pageSize={routeDrillPageSize}
+                          total={routeDrillTotal}
+                          onPageChange={(p: number) => setRouteDrillPage(p)}
+                          onPageSizeChange={(ps: number) => setRouteDrillPageSize(ps)}
+                          onSearchChange={(q: string) => setRouteDrillSearch(q)}
+                          searchable
+                          exportable={false}
+                          showColumnVisibility
+                          showRefresh
+                          onRefresh={() => {
+                            // bump state by re-setting the page (forces effect rerun)
+                            setRouteDrillPage((p) => p);
+                          }}
+                        />
+                      </div>
+                    </Card>
+                  )}
+                </div>
               </div>
             </div>
           )

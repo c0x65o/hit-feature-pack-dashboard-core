@@ -571,7 +571,7 @@ function fetchWithAuth(input, init) {
 }
 export function Dashboards(props = {}) {
     const { pack: packProp, dashboardKey: dashboardKeyProp, onNavigate } = props;
-    const { Page, Card, Button, Dropdown, Select, Input, Modal, Spinner, Badge } = useUi();
+    const { Page, Card, Button, Dropdown, Select, Input, Modal, Spinner, Badge, DataTable } = useUi();
     const { colors, radius } = useThemeTokens();
     const searchParams = useSearchParams();
     const searchParamsString = searchParams?.toString() || '';
@@ -608,6 +608,121 @@ export function Dashboards(props = {}) {
     const [routeDrillMinimized, setRouteDrillMinimized] = React.useState(false);
     const [routeDrillHref, setRouteDrillHref] = React.useState('');
     const [routeDrillTitle, setRouteDrillTitle] = React.useState('Details');
+    const [routeDrillQuery, setRouteDrillQuery] = React.useState(null);
+    const [routeDrillLoading, setRouteDrillLoading] = React.useState(false);
+    const [routeDrillError, setRouteDrillError] = React.useState(null);
+    const [routeDrillRows, setRouteDrillRows] = React.useState([]);
+    const [routeDrillTotal, setRouteDrillTotal] = React.useState(undefined);
+    const [routeDrillPage, setRouteDrillPage] = React.useState(1);
+    const [routeDrillPageSize, setRouteDrillPageSize] = React.useState(25);
+    const [routeDrillSearch, setRouteDrillSearch] = React.useState('');
+    function parseInternalHref(href) {
+        const raw = String(href || '').trim();
+        if (!raw)
+            return null;
+        if (raw.startsWith('http://') || raw.startsWith('https://') || raw.startsWith('mailto:') || raw.startsWith('tel:'))
+            return null;
+        try {
+            // Support relative paths like "/crm/opportunities?pipelineStage=..."
+            const u = typeof window !== 'undefined' ? new URL(raw, window.location.origin) : new URL(`http://localhost${raw}`);
+            const params = {};
+            u.searchParams.forEach((v, k) => {
+                // keep last value if repeated; good enough for v0 drilldowns
+                params[String(k)] = String(v);
+            });
+            return { path: u.pathname, params };
+        }
+        catch {
+            return null;
+        }
+    }
+    function inferItemsAndTotal(json) {
+        // Common patterns across feature packs:
+        // - { items: [], pagination: { total } }
+        // - { data: { items: [], pagination: { total } } }
+        // - { data: [] }
+        // - { items: [] }
+        const pickTotal = (x) => {
+            const t = x?.pagination?.total ?? x?.page?.total ?? x?.meta?.total;
+            const n = Number(t);
+            return Number.isFinite(n) ? n : undefined;
+        };
+        if (json && typeof json === 'object') {
+            if (Array.isArray(json.items))
+                return { items: json.items, total: pickTotal(json) };
+            if (json.data && typeof json.data === 'object') {
+                if (Array.isArray(json.data.items))
+                    return { items: json.data.items, total: pickTotal(json.data) ?? pickTotal(json) };
+                if (Array.isArray(json.data))
+                    return { items: json.data, total: pickTotal(json) };
+            }
+            if (Array.isArray(json.data))
+                return { items: json.data, total: pickTotal(json) };
+        }
+        return { items: [], total: undefined };
+    }
+    function inferColumnsFromRows(rows) {
+        const first = rows && rows.length ? rows[0] : null;
+        const keys = first && typeof first === 'object' && !Array.isArray(first) ? Object.keys(first) : [];
+        const preferredOrder = [
+            'name',
+            'title',
+            'pipelineStageName',
+            'pipelineStage',
+            'amount',
+            'value',
+            'status',
+            'closeDateEstimate',
+            'createdOnTimestamp',
+            'lastUpdatedOnTimestamp',
+            'updatedAt',
+            'id',
+        ];
+        const seen = new Set();
+        const ordered = [
+            ...preferredOrder.filter((k) => keys.includes(k)),
+            ...keys.filter((k) => !preferredOrder.includes(k)),
+        ]
+            .filter((k) => {
+            if (!k || seen.has(k))
+                return false;
+            seen.add(k);
+            return true;
+        })
+            .slice(0, 10); // keep popup scannable
+        const labelize = (k) => String(k || '')
+            .replace(/([a-z])([A-Z])/g, '$1 $2')
+            .replace(/_/g, ' ')
+            .replace(/\b\w/g, (m) => m.toUpperCase());
+        const renderMaybe = (k) => {
+            const lk = k.toLowerCase();
+            if (lk.includes('amount') || lk.includes('value') || lk.endsWith('_usd')) {
+                return (v) => {
+                    const n = typeof v === 'number' ? v : Number(v);
+                    if (!Number.isFinite(n))
+                        return v == null ? '—' : String(v);
+                    return new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(n);
+                };
+            }
+            if (lk.includes('date') || lk.includes('timestamp') || lk.endsWith('at')) {
+                return (v) => {
+                    if (!v)
+                        return '—';
+                    const d = new Date(String(v));
+                    if (!Number.isFinite(d.getTime()))
+                        return String(v);
+                    return d.toLocaleString();
+                };
+            }
+            return undefined;
+        };
+        return ordered.map((k) => ({
+            key: k,
+            label: labelize(k),
+            sortable: false,
+            render: renderMaybe(k),
+        }));
+    }
     const openRouteDrill = React.useCallback((args) => {
         const href = String(args.href || '').trim();
         if (!href)
@@ -624,6 +739,11 @@ export function Dashboards(props = {}) {
         // Embed internal paths in a floating panel.
         setRouteDrillHref(href);
         setRouteDrillTitle(String(args.title || 'Details'));
+        setRouteDrillQuery(parseInternalHref(href));
+        setRouteDrillError(null);
+        setRouteDrillRows([]);
+        setRouteDrillTotal(undefined);
+        setRouteDrillPage(1);
         setRouteDrillOpen(true);
         setRouteDrillMinimized(false);
     }, [navigate]);
@@ -638,6 +758,85 @@ export function Dashboards(props = {}) {
         if (typeof window !== 'undefined')
             window.location.href = h;
     }, [onNavigate]);
+    // Fetch drill table rows from the corresponding /api path, converting query params into filters when needed.
+    React.useEffect(() => {
+        const q = routeDrillQuery;
+        if (!routeDrillOpen || routeDrillMinimized)
+            return;
+        if (!q?.path)
+            return;
+        let cancelled = false;
+        (async () => {
+            try {
+                setRouteDrillLoading(true);
+                setRouteDrillError(null);
+                // Heuristic: list API lives at /api + pathname
+                const apiPath = `/api${q.path}`;
+                const params = new URLSearchParams();
+                params.set('page', String(routeDrillPage));
+                params.set('pageSize', String(routeDrillPageSize));
+                if (routeDrillSearch)
+                    params.set('search', routeDrillSearch);
+                // If the href already includes a canonical filters= JSON payload, pass it through.
+                // Otherwise, treat remaining query params as simple equals filters.
+                const passthrough = q.params || {};
+                const reserved = new Set(['view', 'page', 'pageSize', 'search', 'sortBy', 'sortOrder', 'filterMode', 'filters']);
+                if (passthrough.sortBy)
+                    params.set('sortBy', String(passthrough.sortBy));
+                if (passthrough.sortOrder)
+                    params.set('sortOrder', String(passthrough.sortOrder));
+                if (passthrough.filterMode)
+                    params.set('filterMode', String(passthrough.filterMode));
+                let filtersJson = String(passthrough.filters || '').trim();
+                if (!filtersJson) {
+                    const filters = [];
+                    for (const [k, v] of Object.entries(passthrough)) {
+                        if (reserved.has(k))
+                            continue;
+                        if (!k)
+                            continue;
+                        if (v === '')
+                            continue;
+                        filters.push({ field: k, operator: 'equals', value: v });
+                    }
+                    if (filters.length > 0)
+                        filtersJson = JSON.stringify(filters);
+                }
+                if (filtersJson)
+                    params.set('filters', filtersJson);
+                const res = await fetchWithAuth(`${apiPath}?${params.toString()}`);
+                const json = await res.json().catch(() => ({}));
+                if (!res.ok)
+                    throw new Error(json?.error || `${apiPath} ${res.status}`);
+                const { items, total } = inferItemsAndTotal(json);
+                if (cancelled)
+                    return;
+                setRouteDrillRows(items);
+                setRouteDrillTotal(total);
+            }
+            catch (e) {
+                if (cancelled)
+                    return;
+                setRouteDrillRows([]);
+                setRouteDrillTotal(undefined);
+                setRouteDrillError(e instanceof Error ? e.message : String(e));
+            }
+            finally {
+                if (!cancelled)
+                    setRouteDrillLoading(false);
+            }
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, [
+        routeDrillOpen,
+        routeDrillMinimized,
+        routeDrillQuery,
+        routeDrillPage,
+        routeDrillPageSize,
+        routeDrillSearch,
+    ]);
     const [list, setList] = React.useState([]);
     const [selectedKey, setSelectedKey] = React.useState('');
     const [definition, setDefinition] = React.useState(null);
@@ -2309,6 +2508,9 @@ export function Dashboards(props = {}) {
                                     justifyContent: 'space-between',
                                     gap: 10,
                                     background: colors.bg.muted,
-                                }, children: [_jsxs("div", { style: { minWidth: 0 }, children: [_jsx("div", { style: { fontWeight: 800, fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }, children: routeDrillTitle || 'Details' }), _jsx("div", { style: { fontSize: 11, color: colors.text.muted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }, children: routeDrillHref })] }), _jsxs("div", { style: { display: 'flex', gap: 8, alignItems: 'center' }, children: [_jsx(Button, { variant: "secondary", onClick: () => setRouteDrillMinimized(true), children: "Minimize" }), _jsx(Button, { variant: "secondary", onClick: () => openFullRoute(routeDrillHref), children: "Open full page" }), _jsx(Button, { variant: "secondary", onClick: () => setRouteDrillOpen(false), children: "Close" })] })] }), _jsx("div", { style: { flex: 1, background: colors.bg.surface }, children: _jsx("iframe", { src: routeDrillHref, style: { width: '100%', height: '100%', border: 0, background: colors.bg.surface } }, routeDrillHref) })] }))) : null] })] }));
+                                }, children: [_jsxs("div", { style: { minWidth: 0 }, children: [_jsx("div", { style: { fontWeight: 800, fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }, children: routeDrillTitle || 'Details' }), _jsx("div", { style: { fontSize: 11, color: colors.text.muted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }, children: routeDrillHref })] }), _jsxs("div", { style: { display: 'flex', gap: 8, alignItems: 'center' }, children: [_jsx(Button, { variant: "secondary", onClick: () => setRouteDrillMinimized(true), children: "Minimize" }), _jsx(Button, { variant: "secondary", onClick: () => openFullRoute(routeDrillHref), children: "Open full page" }), _jsx(Button, { variant: "secondary", onClick: () => setRouteDrillOpen(false), children: "Close" })] })] }), _jsx("div", { style: { flex: 1, background: colors.bg.surface }, children: _jsx("div", { style: { padding: 12 }, children: routeDrillError ? (_jsxs("div", { style: { padding: 12, color: '#ef4444', fontSize: 13 }, children: [_jsx("div", { style: { fontWeight: 700, marginBottom: 6 }, children: "Could not load table" }), _jsx("div", { style: { opacity: 0.9 }, children: routeDrillError }), _jsx("div", { style: { marginTop: 10 }, children: _jsx(Button, { variant: "secondary", onClick: () => openFullRoute(routeDrillHref), children: "Open full page instead" }) })] })) : (_jsx(Card, { title: "Results", description: "Fast drilldown table (no page wrapper).", children: _jsx("div", { style: { padding: 12 }, children: _jsx(DataTable, { columns: inferColumnsFromRows(routeDrillRows), data: Array.isArray(routeDrillRows) ? routeDrillRows : [], loading: routeDrillLoading, emptyMessage: "No rows found", manualPagination: true, page: routeDrillPage, pageSize: routeDrillPageSize, total: routeDrillTotal, onPageChange: (p) => setRouteDrillPage(p), onPageSizeChange: (ps) => setRouteDrillPageSize(ps), onSearchChange: (q) => setRouteDrillSearch(q), searchable: true, exportable: false, showColumnVisibility: true, showRefresh: true, onRefresh: () => {
+                                                    // bump state by re-setting the page (forces effect rerun)
+                                                    setRouteDrillPage((p) => p);
+                                                } }) }) })) }) })] }))) : null] })] }));
 }
 export default Dashboards;
