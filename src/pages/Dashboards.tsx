@@ -979,6 +979,60 @@ export function Dashboards(props: DashboardsProps = {}) {
   const [routeDrillPage, setRouteDrillPage] = React.useState<number>(1);
   const [routeDrillPageSize, setRouteDrillPageSize] = React.useState<number>(25);
   const [routeDrillSearch, setRouteDrillSearch] = React.useState<string>('');
+  const [routeDrillRefreshNonce, setRouteDrillRefreshNonce] = React.useState<number>(0);
+
+  type RouteDrillSpec = {
+    path: string;
+    apiPath: string;
+    // Keys to ignore from query string
+    ignoreParams?: string[];
+    // Map query param -> filter field (for filters= JSON)
+    paramToFilterField?: Record<string, string>;
+    // Query params to pass directly (NOT via filters=). Useful for custom endpoints.
+    passthroughParams?: string[];
+    // Row click: open a detail page in the main app.
+    rowHref?: (row: any) => string | null;
+    // Optional stable columns override (if not provided, infer from rows)
+    columns?: Array<{ key: string; label: string; sortable?: boolean; render?: (value: unknown, row: any) => any }>;
+  };
+
+  const ROUTE_DRILL_REGISTRY: RouteDrillSpec[] = [
+    {
+      path: '/crm/opportunities',
+      apiPath: '/api/crm/opportunities',
+      ignoreParams: ['view'],
+      paramToFilterField: { pipelineStage: 'pipelineStage' },
+      rowHref: (row) => (row?.id ? `/crm/opportunities/${encodeURIComponent(String(row.id))}` : null),
+    },
+    {
+      // Custom API route: does NOT use filters= JSON; it expects likelihoodTypeId query param.
+      path: '/crm/opportunities-by-likelihood',
+      apiPath: '/api/crm/opportunities-by-likelihood',
+      passthroughParams: ['likelihoodTypeId'],
+      rowHref: (row) => (row?.id ? `/crm/opportunities/${encodeURIComponent(String(row.id))}` : null),
+    },
+    {
+      path: '/crm/contacts',
+      apiPath: '/api/crm/contacts',
+      rowHref: (row) => (row?.id ? `/crm/contacts/${encodeURIComponent(String(row.id))}` : null),
+    },
+    {
+      path: '/crm/prospects',
+      apiPath: '/api/crm/prospects',
+      rowHref: (row) => (row?.id ? `/crm/prospects/${encodeURIComponent(String(row.id))}` : null),
+    },
+    {
+      path: '/crm/activities',
+      apiPath: '/api/crm/activities',
+      rowHref: (row) => (row?.id ? `/crm/activities/${encodeURIComponent(String(row.id))}` : null),
+    },
+  ];
+
+  function resolveDrillSpec(q: { path: string; params: Record<string, string> } | null): RouteDrillSpec | null {
+    if (!q?.path) return null;
+    const hit = ROUTE_DRILL_REGISTRY.find((s) => s.path === q.path);
+    return hit || null;
+  }
 
   function parseInternalHref(href: string): { path: string; params: Record<string, string> } | null {
     const raw = String(href || '').trim();
@@ -1122,6 +1176,8 @@ export function Dashboards(props: DashboardsProps = {}) {
       setRouteDrillRows([]);
       setRouteDrillTotal(undefined);
       setRouteDrillPage(1);
+      setRouteDrillSearch('');
+      setRouteDrillRefreshNonce((n) => n + 1);
       setRouteDrillOpen(true);
       setRouteDrillMinimized(false);
     },
@@ -1153,8 +1209,9 @@ export function Dashboards(props: DashboardsProps = {}) {
         setRouteDrillLoading(true);
         setRouteDrillError(null);
 
-        // Heuristic: list API lives at /api + pathname
-        const apiPath = `/api${q.path}`;
+        const spec = resolveDrillSpec(q);
+        // Default heuristic: list API lives at /api + pathname
+        const apiPath = spec?.apiPath || `/api${q.path}`;
         const params = new URLSearchParams();
         params.set('page', String(routeDrillPage));
         params.set('pageSize', String(routeDrillPageSize));
@@ -1164,18 +1221,29 @@ export function Dashboards(props: DashboardsProps = {}) {
         // Otherwise, treat remaining query params as simple equals filters.
         const passthrough = q.params || {};
         const reserved = new Set(['view', 'page', 'pageSize', 'search', 'sortBy', 'sortOrder', 'filterMode', 'filters']);
+        for (const k of spec?.ignoreParams || []) reserved.add(k);
         if (passthrough.sortBy) params.set('sortBy', String(passthrough.sortBy));
         if (passthrough.sortOrder) params.set('sortOrder', String(passthrough.sortOrder));
         if (passthrough.filterMode) params.set('filterMode', String(passthrough.filterMode));
 
         let filtersJson = String(passthrough.filters || '').trim();
-        if (!filtersJson) {
+        const passthroughKeys = new Set((spec?.passthroughParams || []).map((x) => String(x || '').trim()).filter(Boolean));
+        // For custom endpoints: pass allowed keys directly.
+        for (const k of passthroughKeys) {
+          const v = passthrough[k];
+          if (v != null && String(v).trim() !== '') params.set(k, String(v));
+        }
+
+        if (!filtersJson && passthroughKeys.size === 0) {
           const filters: Array<{ field: string; operator: string; value: any }> = [];
           for (const [k, v] of Object.entries(passthrough)) {
             if (reserved.has(k)) continue;
+            if (passthroughKeys.has(k)) continue;
             if (!k) continue;
             if (v === '') continue;
-            filters.push({ field: k, operator: 'equals', value: v });
+            const mapped = spec?.paramToFilterField?.[k];
+            const field = mapped ? String(mapped) : k;
+            filters.push({ field, operator: 'equals', value: v });
           }
           if (filters.length > 0) filtersJson = JSON.stringify(filters);
         }
@@ -1209,6 +1277,7 @@ export function Dashboards(props: DashboardsProps = {}) {
     routeDrillPage,
     routeDrillPageSize,
     routeDrillSearch,
+    routeDrillRefreshNonce,
   ]);
 
   const [list, setList] = React.useState<DashboardListItem[]>([]);
@@ -3438,8 +3507,13 @@ export function Dashboards(props: DashboardsProps = {}) {
                           showColumnVisibility
                           showRefresh
                           onRefresh={() => {
-                            // bump state by re-setting the page (forces effect rerun)
-                            setRouteDrillPage((p) => p);
+                            setRouteDrillRefreshNonce((n) => n + 1);
+                          }}
+                          onRowClick={(row: any) => {
+                            const q = routeDrillQuery;
+                            const spec = resolveDrillSpec(q);
+                            const href = spec?.rowHref ? spec.rowHref(row) : null;
+                            if (href) openFullRoute(href);
                           }}
                         />
                       </div>

@@ -616,6 +616,44 @@ export function Dashboards(props = {}) {
     const [routeDrillPage, setRouteDrillPage] = React.useState(1);
     const [routeDrillPageSize, setRouteDrillPageSize] = React.useState(25);
     const [routeDrillSearch, setRouteDrillSearch] = React.useState('');
+    const [routeDrillRefreshNonce, setRouteDrillRefreshNonce] = React.useState(0);
+    const ROUTE_DRILL_REGISTRY = [
+        {
+            path: '/crm/opportunities',
+            apiPath: '/api/crm/opportunities',
+            ignoreParams: ['view'],
+            paramToFilterField: { pipelineStage: 'pipelineStage' },
+            rowHref: (row) => (row?.id ? `/crm/opportunities/${encodeURIComponent(String(row.id))}` : null),
+        },
+        {
+            // Custom API route: does NOT use filters= JSON; it expects likelihoodTypeId query param.
+            path: '/crm/opportunities-by-likelihood',
+            apiPath: '/api/crm/opportunities-by-likelihood',
+            passthroughParams: ['likelihoodTypeId'],
+            rowHref: (row) => (row?.id ? `/crm/opportunities/${encodeURIComponent(String(row.id))}` : null),
+        },
+        {
+            path: '/crm/contacts',
+            apiPath: '/api/crm/contacts',
+            rowHref: (row) => (row?.id ? `/crm/contacts/${encodeURIComponent(String(row.id))}` : null),
+        },
+        {
+            path: '/crm/prospects',
+            apiPath: '/api/crm/prospects',
+            rowHref: (row) => (row?.id ? `/crm/prospects/${encodeURIComponent(String(row.id))}` : null),
+        },
+        {
+            path: '/crm/activities',
+            apiPath: '/api/crm/activities',
+            rowHref: (row) => (row?.id ? `/crm/activities/${encodeURIComponent(String(row.id))}` : null),
+        },
+    ];
+    function resolveDrillSpec(q) {
+        if (!q?.path)
+            return null;
+        const hit = ROUTE_DRILL_REGISTRY.find((s) => s.path === q.path);
+        return hit || null;
+    }
     function parseInternalHref(href) {
         const raw = String(href || '').trim();
         if (!raw)
@@ -762,6 +800,8 @@ export function Dashboards(props = {}) {
         setRouteDrillRows([]);
         setRouteDrillTotal(undefined);
         setRouteDrillPage(1);
+        setRouteDrillSearch('');
+        setRouteDrillRefreshNonce((n) => n + 1);
         setRouteDrillOpen(true);
         setRouteDrillMinimized(false);
     }, [navigate]);
@@ -788,8 +828,9 @@ export function Dashboards(props = {}) {
             try {
                 setRouteDrillLoading(true);
                 setRouteDrillError(null);
-                // Heuristic: list API lives at /api + pathname
-                const apiPath = `/api${q.path}`;
+                const spec = resolveDrillSpec(q);
+                // Default heuristic: list API lives at /api + pathname
+                const apiPath = spec?.apiPath || `/api${q.path}`;
                 const params = new URLSearchParams();
                 params.set('page', String(routeDrillPage));
                 params.set('pageSize', String(routeDrillPageSize));
@@ -799,6 +840,8 @@ export function Dashboards(props = {}) {
                 // Otherwise, treat remaining query params as simple equals filters.
                 const passthrough = q.params || {};
                 const reserved = new Set(['view', 'page', 'pageSize', 'search', 'sortBy', 'sortOrder', 'filterMode', 'filters']);
+                for (const k of spec?.ignoreParams || [])
+                    reserved.add(k);
                 if (passthrough.sortBy)
                     params.set('sortBy', String(passthrough.sortBy));
                 if (passthrough.sortOrder)
@@ -806,16 +849,27 @@ export function Dashboards(props = {}) {
                 if (passthrough.filterMode)
                     params.set('filterMode', String(passthrough.filterMode));
                 let filtersJson = String(passthrough.filters || '').trim();
-                if (!filtersJson) {
+                const passthroughKeys = new Set((spec?.passthroughParams || []).map((x) => String(x || '').trim()).filter(Boolean));
+                // For custom endpoints: pass allowed keys directly.
+                for (const k of passthroughKeys) {
+                    const v = passthrough[k];
+                    if (v != null && String(v).trim() !== '')
+                        params.set(k, String(v));
+                }
+                if (!filtersJson && passthroughKeys.size === 0) {
                     const filters = [];
                     for (const [k, v] of Object.entries(passthrough)) {
                         if (reserved.has(k))
+                            continue;
+                        if (passthroughKeys.has(k))
                             continue;
                         if (!k)
                             continue;
                         if (v === '')
                             continue;
-                        filters.push({ field: k, operator: 'equals', value: v });
+                        const mapped = spec?.paramToFilterField?.[k];
+                        const field = mapped ? String(mapped) : k;
+                        filters.push({ field, operator: 'equals', value: v });
                     }
                     if (filters.length > 0)
                         filtersJson = JSON.stringify(filters);
@@ -854,6 +908,7 @@ export function Dashboards(props = {}) {
         routeDrillPage,
         routeDrillPageSize,
         routeDrillSearch,
+        routeDrillRefreshNonce,
     ]);
     const [list, setList] = React.useState([]);
     const [selectedKey, setSelectedKey] = React.useState('');
@@ -2527,8 +2582,13 @@ export function Dashboards(props = {}) {
                                     gap: 10,
                                     background: colors.bg.muted,
                                 }, children: [_jsxs("div", { style: { minWidth: 0 }, children: [_jsx("div", { style: { fontWeight: 800, fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }, children: routeDrillTitle || 'Details' }), _jsx("div", { style: { fontSize: 11, color: colors.text.muted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }, children: routeDrillHref })] }), _jsxs("div", { style: { display: 'flex', gap: 8, alignItems: 'center' }, children: [_jsx(Button, { variant: "secondary", onClick: () => setRouteDrillMinimized(true), children: "Minimize" }), _jsx(Button, { variant: "secondary", onClick: () => openFullRoute(routeDrillHref), children: "Open full page" }), _jsx(Button, { variant: "secondary", onClick: () => setRouteDrillOpen(false), children: "Close" })] })] }), _jsx("div", { style: { flex: 1, background: colors.bg.surface }, children: _jsx("div", { style: { padding: 12 }, children: routeDrillError ? (_jsxs("div", { style: { padding: 12, color: '#ef4444', fontSize: 13 }, children: [_jsx("div", { style: { fontWeight: 700, marginBottom: 6 }, children: "Could not load table" }), _jsx("div", { style: { opacity: 0.9 }, children: routeDrillError }), _jsx("div", { style: { marginTop: 10 }, children: _jsx(Button, { variant: "secondary", onClick: () => openFullRoute(routeDrillHref), children: "Open full page instead" }) })] })) : (_jsx(Card, { title: "Results", description: "Fast drilldown table (no page wrapper).", children: _jsx("div", { style: { padding: 12 }, children: _jsx(DataTable, { columns: inferColumnsFromRows(routeDrillRows), data: Array.isArray(routeDrillRows) ? routeDrillRows : [], loading: routeDrillLoading, emptyMessage: "No rows found", initialColumnVisibility: inferInitialColumnVisibilityFromRows(routeDrillRows), manualPagination: true, page: routeDrillPage, pageSize: routeDrillPageSize, total: routeDrillTotal, onPageChange: (p) => setRouteDrillPage(p), onPageSizeChange: (ps) => setRouteDrillPageSize(ps), onSearchChange: (q) => setRouteDrillSearch(q), searchable: true, exportable: false, showColumnVisibility: true, showRefresh: true, onRefresh: () => {
-                                                    // bump state by re-setting the page (forces effect rerun)
-                                                    setRouteDrillPage((p) => p);
+                                                    setRouteDrillRefreshNonce((n) => n + 1);
+                                                }, onRowClick: (row) => {
+                                                    const q = routeDrillQuery;
+                                                    const spec = resolveDrillSpec(q);
+                                                    const href = spec?.rowHref ? spec.rowHref(row) : null;
+                                                    if (href)
+                                                        openFullRoute(href);
                                                 } }) }) })) }) })] }))) : null] })] }));
 }
 export default Dashboards;
