@@ -969,6 +969,7 @@ export function Dashboards(props: DashboardsProps = {}) {
   // -----------------------------------------------------------------------------
   const [routeDrillOpen, setRouteDrillOpen] = React.useState(false);
   const [routeDrillMinimized, setRouteDrillMinimized] = React.useState(false);
+  const [routeDrillMaximized, setRouteDrillMaximized] = React.useState(false);
   const [routeDrillHref, setRouteDrillHref] = React.useState<string>('');
   const [routeDrillTitle, setRouteDrillTitle] = React.useState<string>('Details');
   const [routeDrillQuery, setRouteDrillQuery] = React.useState<{ path: string; params: Record<string, string> } | null>(null);
@@ -3377,9 +3378,10 @@ export function Dashboards(props: DashboardsProps = {}) {
           </div>
         </Modal>
 
-        {/* Floating route drill panel (minimizable) */}
+        {/* Floating route drill panel (center popup with minimize/maximize) */}
         {routeDrillOpen ? (
           routeDrillMinimized ? (
+            /* Minimized bar at bottom center */
             <div
               role="button"
               tabIndex={0}
@@ -3391,12 +3393,13 @@ export function Dashboards(props: DashboardsProps = {}) {
               }}
               style={{
                 position: 'fixed',
-                right: 16,
+                left: '50%',
+                transform: 'translateX(-50%)',
                 bottom: 16,
                 zIndex: 100000,
-                minWidth: 260,
+                minWidth: 280,
                 maxWidth: 'min(520px, calc(100vw - 32px))',
-                padding: '10px 12px',
+                padding: '10px 16px',
                 borderRadius: 14,
                 border: `1px solid ${colors.border.subtle}`,
                 background: colors.bg.muted,
@@ -3405,11 +3408,11 @@ export function Dashboards(props: DashboardsProps = {}) {
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'space-between',
-                gap: 10,
+                gap: 12,
               }}
               title="Click to expand"
             >
-              <div style={{ minWidth: 0 }}>
+              <div style={{ minWidth: 0, flex: 1 }}>
                 <div style={{ fontWeight: 700, fontSize: 12, opacity: 0.8 }}>Drilldown</div>
                 <div style={{ fontWeight: 700, fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                   {routeDrillTitle || 'Details'}
@@ -3421,6 +3424,7 @@ export function Dashboards(props: DashboardsProps = {}) {
                   onClick={(e: any) => {
                     e.stopPropagation?.();
                     setRouteDrillOpen(false);
+                    setRouteDrillMaximized(false);
                   }}
                 >
                   Close
@@ -3428,100 +3432,138 @@ export function Dashboards(props: DashboardsProps = {}) {
               </div>
             </div>
           ) : (
-            <div
-              style={{
-                position: 'fixed',
-                top: 0,
-                right: 0,
-                height: '100vh',
-                width: 'min(860px, 96vw)',
-                zIndex: 100000,
-                background: colors.bg.surface,
-                borderLeft: `1px solid ${colors.border.subtle}`,
-                display: 'flex',
-                flexDirection: 'column',
-                boxShadow: '0 24px 48px rgba(0,0,0,0.35)',
-              }}
-            >
+            /* Center popup overlay */
+            <>
+              {/* Backdrop */}
+              <div
+                onClick={() => setRouteDrillMinimized(true)}
+                style={{
+                  position: 'fixed',
+                  inset: 0,
+                  zIndex: 99999,
+                  backgroundColor: 'rgba(0,0,0,0.45)',
+                  backdropFilter: 'blur(2px)',
+                }}
+              />
+              {/* Center popup container */}
               <div
                 style={{
-                  padding: '10px 12px',
-                  borderBottom: `1px solid ${colors.border.subtle}`,
+                  position: 'fixed',
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  zIndex: 100000,
                   display: 'flex',
                   alignItems: 'center',
-                  justifyContent: 'space-between',
-                  gap: 10,
-                  background: colors.bg.muted,
+                  justifyContent: 'center',
+                  padding: routeDrillMaximized ? 0 : 24,
+                  pointerEvents: 'none',
                 }}
               >
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontWeight: 800, fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    {routeDrillTitle || 'Details'}
-                  </div>
-                  <div style={{ fontSize: 11, color: colors.text.muted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    {routeDrillHref}
-                  </div>
-                </div>
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                  <Button variant="secondary" onClick={() => setRouteDrillMinimized(true)}>
-                    Minimize
-                  </Button>
-                  <Button variant="secondary" onClick={() => openFullRoute(routeDrillHref)}>
-                    Open full page
-                  </Button>
-                  <Button variant="secondary" onClick={() => setRouteDrillOpen(false)}>
-                    Close
-                  </Button>
-                </div>
-              </div>
-              <div style={{ flex: 1, background: colors.bg.surface }}>
-                <div style={{ padding: 12 }}>
-                  {routeDrillError ? (
-                    <div style={{ padding: 12, color: '#ef4444', fontSize: 13 }}>
-                      <div style={{ fontWeight: 700, marginBottom: 6 }}>Could not load table</div>
-                      <div style={{ opacity: 0.9 }}>{routeDrillError}</div>
-                      <div style={{ marginTop: 10 }}>
-                        <Button variant="secondary" onClick={() => openFullRoute(routeDrillHref)}>
-                          Open full page instead
-                        </Button>
+                {/* Popup panel */}
+                <div
+                  style={{
+                    width: routeDrillMaximized ? '100%' : 'min(50vw, 900px)',
+                    height: routeDrillMaximized ? '100%' : 'min(80vh, 800px)',
+                    minWidth: routeDrillMaximized ? '100%' : 600,
+                    background: colors.bg.surface,
+                    border: routeDrillMaximized ? 'none' : `1px solid ${colors.border.subtle}`,
+                    borderRadius: routeDrillMaximized ? 0 : 16,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    boxShadow: routeDrillMaximized ? 'none' : '0 24px 48px rgba(0,0,0,0.35)',
+                    overflow: 'hidden',
+                    pointerEvents: 'auto',
+                  }}
+                >
+                  {/* Header */}
+                  <div
+                    style={{
+                      padding: '12px 16px',
+                      borderBottom: `1px solid ${colors.border.subtle}`,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: 12,
+                      background: colors.bg.muted,
+                      flexShrink: 0,
+                    }}
+                  >
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <div style={{ fontWeight: 800, fontSize: 14, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {routeDrillTitle || 'Details'}
+                      </div>
+                      <div style={{ fontSize: 11, color: colors.text.muted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {routeDrillHref}
                       </div>
                     </div>
-                  ) : (
-                    <Card title="Results" description="Fast drilldown table (no page wrapper).">
-                      <div style={{ padding: 12 }}>
-                        <DataTable
-                          columns={inferColumnsFromRows(routeDrillRows)}
-                          data={Array.isArray(routeDrillRows) ? routeDrillRows : []}
-                          loading={routeDrillLoading}
-                          emptyMessage="No rows found"
-                          initialColumnVisibility={inferInitialColumnVisibilityFromRows(routeDrillRows)}
-                          manualPagination
-                          page={routeDrillPage}
-                          pageSize={routeDrillPageSize}
-                          total={routeDrillTotal}
-                          onPageChange={(p: number) => setRouteDrillPage(p)}
-                          onPageSizeChange={(ps: number) => setRouteDrillPageSize(ps)}
-                          onSearchChange={(q: string) => setRouteDrillSearch(q)}
-                          searchable
-                          exportable={false}
-                          showColumnVisibility
-                          showRefresh
-                          onRefresh={() => {
-                            setRouteDrillRefreshNonce((n) => n + 1);
-                          }}
-                          onRowClick={(row: any) => {
-                            const q = routeDrillQuery;
-                            const spec = resolveDrillSpec(q);
-                            const href = spec?.rowHref ? spec.rowHref(row) : null;
-                            if (href) openFullRoute(href);
-                          }}
-                        />
-                      </div>
-                    </Card>
-                  )}
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexShrink: 0 }}>
+                      <Button variant="secondary" onClick={() => setRouteDrillMinimized(true)}>
+                        Minimize
+                      </Button>
+                      <Button variant="secondary" onClick={() => setRouteDrillMaximized(!routeDrillMaximized)}>
+                        {routeDrillMaximized ? 'Restore' : 'Maximize'}
+                      </Button>
+                      <Button variant="secondary" onClick={() => openFullRoute(routeDrillHref)}>
+                        Open full page
+                      </Button>
+                      <Button variant="secondary" onClick={() => { setRouteDrillOpen(false); setRouteDrillMaximized(false); }}>
+                        Close
+                      </Button>
+                    </div>
+                  </div>
+                  {/* Content */}
+                  <div style={{ flex: 1, overflow: 'auto', background: colors.bg.surface }}>
+                    <div style={{ padding: 16 }}>
+                      {routeDrillError ? (
+                        <div style={{ padding: 12, color: '#ef4444', fontSize: 13 }}>
+                          <div style={{ fontWeight: 700, marginBottom: 6 }}>Could not load table</div>
+                          <div style={{ opacity: 0.9 }}>{routeDrillError}</div>
+                          <div style={{ marginTop: 10 }}>
+                            <Button variant="secondary" onClick={() => openFullRoute(routeDrillHref)}>
+                              Open full page instead
+                            </Button>
+                          </div>
+                        </div>
+                      ) : (
+                        <Card title="Results" description="Fast drilldown table (no page wrapper).">
+                          <div style={{ padding: 12 }}>
+                            <DataTable
+                              columns={inferColumnsFromRows(routeDrillRows)}
+                              data={Array.isArray(routeDrillRows) ? routeDrillRows : []}
+                              loading={routeDrillLoading}
+                              emptyMessage="No rows found"
+                              initialColumnVisibility={inferInitialColumnVisibilityFromRows(routeDrillRows)}
+                              manualPagination
+                              page={routeDrillPage}
+                              pageSize={routeDrillPageSize}
+                              total={routeDrillTotal}
+                              onPageChange={(p: number) => setRouteDrillPage(p)}
+                              onPageSizeChange={(ps: number) => setRouteDrillPageSize(ps)}
+                              onSearchChange={(q: string) => setRouteDrillSearch(q)}
+                              searchable
+                              exportable={false}
+                              showColumnVisibility
+                              showRefresh
+                              onRefresh={() => {
+                                setRouteDrillRefreshNonce((n) => n + 1);
+                              }}
+                              onRowClick={(row: any) => {
+                                const q = routeDrillQuery;
+                                const spec = resolveDrillSpec(q);
+                                const href = spec?.rowHref ? spec.rowHref(row) : null;
+                                if (href) openFullRoute(href);
+                              }}
+                            />
+                          </div>
+                        </Card>
+                      )}
+                    </div>
+                  </div>
                 </div>
               </div>
-            </div>
+            </>
           )
         ) : null}
       </div>
