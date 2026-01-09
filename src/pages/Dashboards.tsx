@@ -2,7 +2,9 @@
 
 import React from 'react';
 import { useSearchParams } from 'next/navigation';
-import { useUi, AclPicker, type AclPickerConfig, type AclEntry } from '@hit/ui-kit';
+import type { AclEntry, AclPickerConfig } from '@hit/ui-kit';
+import { useUi } from '@hit/ui-kit';
+import { AclPicker } from '@hit/ui-kit/components/AclPicker';
 import { createFetchPrincipals } from '@hit/feature-pack-auth-core';
 import { useThemeTokens } from '@hit/ui-kit';
 import { LucideIcon, type LucideIconComponent } from '../utils/lucide-dynamic';

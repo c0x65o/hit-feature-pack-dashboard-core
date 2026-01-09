@@ -2,7 +2,8 @@
 import { jsx as _jsx, jsxs as _jsxs, Fragment as _Fragment } from "react/jsx-runtime";
 import React from 'react';
 import { useSearchParams } from 'next/navigation';
-import { useUi, AclPicker } from '@hit/ui-kit';
+import { useUi } from '@hit/ui-kit';
+import { AclPicker } from '@hit/ui-kit/components/AclPicker';
 import { createFetchPrincipals } from '@hit/feature-pack-auth-core';
 import { useThemeTokens } from '@hit/ui-kit';
 import { LucideIcon } from '../utils/lucide-dynamic';
