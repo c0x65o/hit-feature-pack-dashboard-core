@@ -16,4 +16,6 @@ export declare function extractUserFromRequest(request: NextRequest): User | nul
  * Extract user ID from request (convenience function)
  */
 export declare function getUserId(request: NextRequest): string | null;
+import { NextResponse } from 'next/server';
+export declare function requirePageAccess(request: NextRequest, pagePath: string): Promise<User | NextResponse>;
 //# sourceMappingURL=auth.d.ts.map

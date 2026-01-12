@@ -2,21 +2,27 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { sql } from 'drizzle-orm';
-import { extractUserFromRequest } from '../auth';
+import { extractUserFromRequest, requirePageAccess } from '../auth';
 import { resolveUserPrincipals } from '@hit/feature-pack-auth-core/server/lib/acl-utils';
+import { resolveDashboardCoreScopeMode } from '../lib/scope-mode';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 export async function GET(request: NextRequest, { params }: { params: { key: string } }) {
   try {
-    const user = extractUserFromRequest(request);
-    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    const gate = await requirePageAccess(request, '/dashboards');
+    if (gate instanceof NextResponse) return gate;
+    const user = gate;
 
     const key = decodeURIComponent(params.key || '').trim();
     if (!key) return NextResponse.json({ error: 'Missing key' }, { status: 400 });
 
     const db = getDb();
+    
+    // Resolve scope mode for read access
+    const mode = await resolveDashboardCoreScopeMode(request, { entity: 'dashboards', verb: 'read' });
+
     const principals = await resolveUserPrincipals({ request, user });
     const userGroups = principals.groupIds || [];
     const userRoles = principals.roles || [];
@@ -86,10 +92,25 @@ export async function GET(request: NextRequest, { params }: { params: { key: str
     const row = ((result as any).rows || [])[0];
     if (!row) return NextResponse.json({ error: 'Dashboard not found' }, { status: 404 });
 
-    const canRead =
-      row.visibility === 'public' || row.isOwner || row.isShared;
-
-    if (!canRead) return NextResponse.json({ error: 'Access denied' }, { status: 403 });
+    // Apply scope-based access check (explicit branching on none/own/ldd/any)
+    if (mode === 'none') {
+      return NextResponse.json({ error: 'Access denied' }, { status: 403 });
+    } else if (mode === 'own') {
+      if (row.ownerUserId !== user.sub) {
+        return NextResponse.json({ error: 'Access denied' }, { status: 403 });
+      }
+    } else if (mode === 'ldd') {
+      // Dashboards don't have LDD fields, so ldd mode behaves the same as own
+      if (row.ownerUserId !== user.sub) {
+        return NextResponse.json({ error: 'Access denied' }, { status: 403 });
+      }
+    } else if (mode === 'any') {
+      // For 'any' mode, we still respect visibility and shares
+      const canRead = row.visibility === 'public' || row.isOwner || row.isShared;
+      if (!canRead) {
+        return NextResponse.json({ error: 'Access denied' }, { status: 403 });
+      }
+    }
 
     return NextResponse.json({ data: row });
   } catch (error: any) {
@@ -137,16 +158,18 @@ function normalizeDefinition(def: any): any {
  */
 export async function PUT(request: NextRequest, { params }: { params: { key: string } }) {
   try {
-    const user = extractUserFromRequest(request);
-    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    const gate = await requirePageAccess(request, '/dashboards');
+    if (gate instanceof NextResponse) return gate;
+    const user = gate;
 
     const key = decodeURIComponent(params.key || '').trim();
     if (!key) return NextResponse.json({ error: 'Missing key' }, { status: 400 });
 
     const db = getDb();
     const body = await request.json().catch(() => ({}));
-    const isAdmin =
-      Array.isArray(user.roles) && (user.roles as string[]).some((r) => String(r || '').toLowerCase() === 'admin');
+
+    // Resolve scope mode for write access
+    const mode = await resolveDashboardCoreScopeMode(request, { entity: 'dashboards', verb: 'write' });
 
     const principals = await resolveUserPrincipals({ request, user });
     const userGroups = principals.groupIds || [];
@@ -185,8 +208,25 @@ export async function PUT(request: NextRequest, { params }: { params: { key: str
     if (!existing) return NextResponse.json({ error: 'Dashboard not found' }, { status: 404 });
     if (existing.isSystem) return NextResponse.json({ error: 'System dashboards cannot be updated. Copy it first.' }, { status: 403 });
 
-    const canEdit = existing.isOwner || existing.hasFullShare || isAdmin;
-    if (!canEdit) return NextResponse.json({ error: 'Access denied' }, { status: 403 });
+    // Apply scope-based access check (explicit branching on none/own/ldd/any)
+    if (mode === 'none') {
+      return NextResponse.json({ error: 'Access denied' }, { status: 403 });
+    } else if (mode === 'own') {
+      if (existing.ownerUserId !== user.sub) {
+        return NextResponse.json({ error: 'Access denied' }, { status: 403 });
+      }
+    } else if (mode === 'ldd') {
+      // Dashboards don't have LDD fields, so ldd mode behaves the same as own
+      if (existing.ownerUserId !== user.sub) {
+        return NextResponse.json({ error: 'Access denied' }, { status: 403 });
+      }
+    } else if (mode === 'any') {
+      // For 'any' mode, we still respect shares
+      const canEdit = existing.isOwner || existing.hasFullShare;
+      if (!canEdit) {
+        return NextResponse.json({ error: 'Access denied' }, { status: 403 });
+      }
+    }
 
     const nextName = body?.name !== undefined ? String(body?.name || '').trim() : undefined;
     const nextDesc = body?.description !== undefined ? (body?.description === null ? null : String(body?.description || '')) : undefined;

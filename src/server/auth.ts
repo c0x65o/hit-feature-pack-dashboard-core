@@ -115,3 +115,115 @@ export function getUserId(request: NextRequest): string | null {
   return user?.sub || null;
 }
 
+import { NextResponse } from 'next/server';
+
+function getForwardedBearerFromRequest(request: NextRequest): string {
+  const rawTokenHeader = request.headers.get('x-hit-token-raw') || request.headers.get('X-HIT-Token-Raw');
+  const authHeader = request.headers.get('authorization') || request.headers.get('Authorization');
+  const cookieToken = request.cookies.get('hit_token')?.value || null;
+  const bearer =
+    rawTokenHeader && rawTokenHeader.trim()
+      ? rawTokenHeader.trim().startsWith('Bearer ')
+        ? rawTokenHeader.trim()
+        : `Bearer ${rawTokenHeader.trim()}`
+      : authHeader && authHeader.trim()
+        ? authHeader
+        : cookieToken
+          ? `Bearer ${cookieToken}`
+          : '';
+  return bearer;
+}
+
+function getAuthProxyBaseUrlFromRequest(request: NextRequest): string {
+  // Server-side fetch() requires absolute URL.
+  const origin = new URL(request.url).origin;
+  return `${origin}/api/proxy/auth`;
+}
+
+function getFrontendBaseUrlFromRequest(request: NextRequest): string {
+  const host = request.headers.get('x-forwarded-host') || request.headers.get('host') || '';
+  const proto = request.headers.get('x-forwarded-proto') || 'https';
+  return host ? `${proto}://${host}` : new URL(request.url).origin;
+}
+
+function getAuthBaseUrl(request: NextRequest): { baseUrl: string; source: string } {
+  const envUrl = process.env.HIT_AUTH_URL || process.env.NEXT_PUBLIC_HIT_AUTH_URL;
+  if (envUrl && String(envUrl).trim()) {
+    return { baseUrl: String(envUrl).trim().replace(/\/$/, ''), source: 'env' };
+  }
+  return { baseUrl: getAuthProxyBaseUrlFromRequest(request).replace(/\/$/, ''), source: 'proxy' };
+}
+
+export async function requirePageAccess(request: NextRequest, pagePath: string): Promise<User | NextResponse> {
+  const user = extractUserFromRequest(request);
+  if (!user?.sub) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+
+  const bearer = getForwardedBearerFromRequest(request);
+  if (!bearer) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+
+  // IMPORTANT (prod parity):
+  // Many deployed environments inject X-HIT-Service-Token on the *incoming* request to the app
+  // (so modules can resolve config/db via provisioner). Server-side fetches to our own proxy
+  // must forward it explicitly; `credentials: 'include'` does not forward headers in Next's
+  // server runtime.
+  const serviceToken =
+    request.headers.get('x-hit-service-token') ||
+    request.headers.get('X-HIT-Service-Token') ||
+    process.env.HIT_SERVICE_TOKEN ||
+    '';
+
+  const { baseUrl, source } = getAuthBaseUrl(request);
+  const frontendBaseUrl = getFrontendBaseUrlFromRequest(request);
+  try {
+    // Prefer direct auth module URL when available (avoids "server calls itself via ingress" failures).
+    // Still use the same endpoint so failures include diagnostic context.
+    const res = await fetch(`${baseUrl}/permissions/pages/check${String(pagePath)}`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: bearer,
+        ...(serviceToken ? { 'X-HIT-Service-Token': serviceToken } : {}),
+        ...(frontendBaseUrl ? { 'X-Frontend-Base-URL': frontendBaseUrl } : {}),
+      },
+      credentials: 'include',
+    });
+    const json = await res.json().catch(() => ({}));
+
+    // Fail closed if auth proxy returns non-200 or unexpected shape.
+    const allowed = Boolean((json as any)?.has_permission ?? (json as any)?.hasPermission ?? false);
+    if (!res.ok || !allowed) {
+      // Keep response safe/minimal but include enough to debug in audit logs.
+      const debug = typeof json === 'object' && json ? json : { raw: json };
+      return NextResponse.json(
+        {
+          error: 'Forbidden',
+          code: 'page_access_denied',
+          pagePath,
+          authz: {
+            status: res.status,
+            authBaseSource: source,
+            ...(debug as any),
+          },
+        },
+        { status: 403 }
+      );
+    }
+    return user;
+  } catch (e: any) {
+    return NextResponse.json(
+      {
+        error: 'Forbidden',
+        code: 'page_access_denied',
+        pagePath,
+        authz: {
+          status: null,
+          source: 'auth_proxy_exception',
+          authBaseSource: source,
+          authBaseUrl: baseUrl,
+          message: e?.message ? String(e.message) : 'Auth check threw',
+        },
+      },
+      { status: 403 }
+    );
+  }
+}

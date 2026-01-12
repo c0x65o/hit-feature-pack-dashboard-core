@@ -2,14 +2,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { sql } from 'drizzle-orm';
-import { extractUserFromRequest } from '../auth';
+import { extractUserFromRequest, requirePageAccess } from '../auth';
+import { resolveDashboardCoreScopeMode } from '../lib/scope-mode';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
-
-function isAdmin(roles?: string[]) {
-  return Array.isArray(roles) && roles.some((r) => String(r || '').toLowerCase() === 'admin');
-}
 
 async function loadDashboardByKey(db: ReturnType<typeof getDb>, key: string) {
   const res = await db.execute(sql`
@@ -31,8 +28,9 @@ async function loadDashboardByKey(db: ReturnType<typeof getDb>, key: string) {
  */
 export async function GET(request: NextRequest, { params }: { params: { key: string } }) {
   try {
-    const user = extractUserFromRequest(request);
-    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    const gate = await requirePageAccess(request, '/dashboards');
+    if (gate instanceof NextResponse) return gate;
+    const user = gate;
 
     const key = decodeURIComponent(params.key || '').trim();
     if (!key) return NextResponse.json({ error: 'Missing key' }, { status: 400 });
@@ -41,8 +39,27 @@ export async function GET(request: NextRequest, { params }: { params: { key: str
     const dash = await loadDashboardByKey(db, key);
     if (!dash) return NextResponse.json({ error: 'Dashboard not found' }, { status: 404 });
 
-    const canManage = dash.ownerUserId === user.sub || isAdmin(user.roles);
-    if (!canManage) return NextResponse.json({ error: 'Access denied' }, { status: 403 });
+    // Resolve scope mode for write access (shares management requires write permission)
+    const mode = await resolveDashboardCoreScopeMode(request, { entity: 'dashboards', verb: 'write' });
+
+    // Apply scope-based access check (explicit branching on none/own/ldd/any)
+    if (mode === 'none') {
+      return NextResponse.json({ error: 'Access denied' }, { status: 403 });
+    } else if (mode === 'own') {
+      if (dash.ownerUserId !== user.sub) {
+        return NextResponse.json({ error: 'Access denied' }, { status: 403 });
+      }
+    } else if (mode === 'ldd') {
+      // Dashboards don't have LDD fields, so ldd mode behaves the same as own
+      if (dash.ownerUserId !== user.sub) {
+        return NextResponse.json({ error: 'Access denied' }, { status: 403 });
+      }
+    } else if (mode === 'any') {
+      // For 'any' mode, only owner can manage shares (shares are owner-only feature)
+      if (dash.ownerUserId !== user.sub) {
+        return NextResponse.json({ error: 'Access denied' }, { status: 403 });
+      }
+    }
 
     const res = await db.execute(sql`
       select
@@ -71,8 +88,9 @@ export async function GET(request: NextRequest, { params }: { params: { key: str
  */
 export async function POST(request: NextRequest, { params }: { params: { key: string } }) {
   try {
-    const user = extractUserFromRequest(request);
-    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    const gate = await requirePageAccess(request, '/dashboards');
+    if (gate instanceof NextResponse) return gate;
+    const user = gate;
 
     const key = decodeURIComponent(params.key || '').trim();
     if (!key) return NextResponse.json({ error: 'Missing key' }, { status: 400 });
@@ -89,16 +107,32 @@ export async function POST(request: NextRequest, { params }: { params: { key: st
     if (!['user', 'group', 'role'].includes(principalType)) {
       return NextResponse.json({ error: 'principalType must be user, group, or role' }, { status: 400 });
     }
-    if (!isAdmin(user.roles) && principalType !== 'user') {
-      return NextResponse.json({ error: 'Only admins can share with groups or roles' }, { status: 403 });
-    }
 
     const db = getDb();
     const dash = await loadDashboardByKey(db, key);
     if (!dash) return NextResponse.json({ error: 'Dashboard not found' }, { status: 404 });
 
-    const canManage = dash.ownerUserId === user.sub || isAdmin(user.roles);
-    if (!canManage) return NextResponse.json({ error: 'Access denied' }, { status: 403 });
+    // Resolve scope mode for write access (shares management requires write permission)
+    const mode = await resolveDashboardCoreScopeMode(request, { entity: 'dashboards', verb: 'write' });
+
+    // Apply scope-based access check (explicit branching on none/own/ldd/any)
+    if (mode === 'none') {
+      return NextResponse.json({ error: 'Access denied' }, { status: 403 });
+    } else if (mode === 'own') {
+      if (dash.ownerUserId !== user.sub) {
+        return NextResponse.json({ error: 'Access denied' }, { status: 403 });
+      }
+    } else if (mode === 'ldd') {
+      // Dashboards don't have LDD fields, so ldd mode behaves the same as own
+      if (dash.ownerUserId !== user.sub) {
+        return NextResponse.json({ error: 'Access denied' }, { status: 403 });
+      }
+    } else if (mode === 'any') {
+      // For 'any' mode, only owner can manage shares (shares are owner-only feature)
+      if (dash.ownerUserId !== user.sub) {
+        return NextResponse.json({ error: 'Access denied' }, { status: 403 });
+      }
+    }
 
     if (principalType === 'user' && principalId === user.sub) {
       return NextResponse.json({ error: 'Cannot share with yourself' }, { status: 400 });
@@ -153,8 +187,9 @@ export async function POST(request: NextRequest, { params }: { params: { key: st
  */
 export async function DELETE(request: NextRequest, { params }: { params: { key: string } }) {
   try {
-    const user = extractUserFromRequest(request);
-    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    const gate = await requirePageAccess(request, '/dashboards');
+    if (gate instanceof NextResponse) return gate;
+    const user = gate;
 
     const key = decodeURIComponent(params.key || '').trim();
     if (!key) return NextResponse.json({ error: 'Missing key' }, { status: 400 });
@@ -170,8 +205,27 @@ export async function DELETE(request: NextRequest, { params }: { params: { key: 
     const dash = await loadDashboardByKey(db, key);
     if (!dash) return NextResponse.json({ error: 'Dashboard not found' }, { status: 404 });
 
-    const canManage = dash.ownerUserId === user.sub || isAdmin(user.roles);
-    if (!canManage) return NextResponse.json({ error: 'Access denied' }, { status: 403 });
+    // Resolve scope mode for write access (shares management requires write permission)
+    const mode = await resolveDashboardCoreScopeMode(request, { entity: 'dashboards', verb: 'write' });
+
+    // Apply scope-based access check (explicit branching on none/own/ldd/any)
+    if (mode === 'none') {
+      return NextResponse.json({ error: 'Access denied' }, { status: 403 });
+    } else if (mode === 'own') {
+      if (dash.ownerUserId !== user.sub) {
+        return NextResponse.json({ error: 'Access denied' }, { status: 403 });
+      }
+    } else if (mode === 'ldd') {
+      // Dashboards don't have LDD fields, so ldd mode behaves the same as own
+      if (dash.ownerUserId !== user.sub) {
+        return NextResponse.json({ error: 'Access denied' }, { status: 403 });
+      }
+    } else if (mode === 'any') {
+      // For 'any' mode, only owner can manage shares (shares are owner-only feature)
+      if (dash.ownerUserId !== user.sub) {
+        return NextResponse.json({ error: 'Access denied' }, { status: 403 });
+      }
+    }
 
     const del = await db.execute(sql`
       delete from "dashboard_definition_shares" s

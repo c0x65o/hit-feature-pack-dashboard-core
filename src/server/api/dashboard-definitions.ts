@@ -2,9 +2,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { sql } from 'drizzle-orm';
-import { extractUserFromRequest } from '../auth';
+import { extractUserFromRequest, requirePageAccess } from '../auth';
 import crypto from 'node:crypto';
 import { resolveUserPrincipals } from '@hit/feature-pack-auth-core/server/lib/acl-utils';
+import { resolveDashboardCoreScopeMode } from '../lib/scope-mode';
+import { requireDashboardCoreAction } from '../lib/require-action';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -27,8 +29,9 @@ export { postBodySchema } from './dashboard-definitions.schema';
  */
 export async function GET(request: NextRequest) {
   try {
-    const user = extractUserFromRequest(request);
-    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    const gate = await requirePageAccess(request, '/dashboards');
+    if (gate instanceof NextResponse) return gate;
+    const user = gate;
 
     const db = getDb();
     const { searchParams } = new URL(request.url);
@@ -38,6 +41,28 @@ export async function GET(request: NextRequest) {
     // Ensure pack dashboards exist out-of-the-box.
     // Some environments skip app seeds; this makes dashboards reliably available.
     await ensureDefaultPackDashboards(db, pack);
+
+    // Resolve scope mode for read access
+    const mode = await resolveDashboardCoreScopeMode(request, { entity: 'dashboards', verb: 'read' });
+
+    // Apply scope-based filtering (explicit branching on none/own/ldd/any)
+    let scopeModeFilter: any;
+    if (mode === 'none') {
+      // Explicit deny: return empty results (fail-closed but non-breaking for list UI)
+      scopeModeFilter = sql<boolean>`false`;
+    } else if (mode === 'own') {
+      // Only show dashboards owned by the current user
+      scopeModeFilter = sql`d.owner_user_id = ${user.sub}`;
+    } else if (mode === 'ldd') {
+      // Dashboards don't have LDD fields, so ldd mode behaves the same as own
+      scopeModeFilter = sql`d.owner_user_id = ${user.sub}`;
+    } else if (mode === 'any') {
+      // Show all dashboards (respecting visibility and shares)
+      scopeModeFilter = sql<boolean>`true`;
+    } else {
+      // Fallback to own for safety
+      scopeModeFilter = sql`d.owner_user_id = ${user.sub}`;
+    }
 
     const principals = await resolveUserPrincipals({ request, user });
     const userGroups = principals.groupIds || [];
@@ -71,6 +96,16 @@ export async function GET(request: NextRequest) {
             where s.dashboard_id = d.id
               and (s.principal_type = 'user' and s.principal_id = ${user.sub})
           )`;
+
+    // For 'any' mode, we still respect visibility and shares
+    // For 'own' and 'ldd' modes, we only show owned dashboards (already filtered by scopeModeFilter)
+    const visibilityFilter = mode === 'any'
+      ? sql`(
+          d.visibility = 'public'
+          or d.owner_user_id = ${user.sub}
+          or ${sharedAccess}
+        )`
+      : sql<boolean>`true`; // scopeModeFilter already handles ownership
 
     const rows = await db.execute(sql`
       select
@@ -111,11 +146,8 @@ export async function GET(request: NextRequest) {
       from "dashboard_definitions" d
       where
         ${scopeFilter}
-        and (
-          d.visibility = 'public'
-          or d.owner_user_id = ${user.sub}
-          or ${sharedAccess}
-        )
+        and ${scopeModeFilter}
+        and ${visibilityFilter}
       order by
         case when d.scope->>'kind' = 'global' then 0 else 1 end,
         d.name asc
@@ -531,8 +563,20 @@ function normalizeDefinition(def: any): any {
  */
 export async function POST(request: NextRequest) {
   try {
-    const user = extractUserFromRequest(request);
-    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    const gate = await requirePageAccess(request, '/dashboards');
+    if (gate instanceof NextResponse) return gate;
+    const user = gate;
+
+    // Check create permission
+    const createCheck = await requireDashboardCoreAction(request, 'dashboard-core.dashboards.create');
+    if (createCheck) return createCheck;
+
+    // Also require write scope to not be explicitly denied.
+    // Create is a separate action, but write scope is the coarse gate for mutations.
+    const writeMode = await resolveDashboardCoreScopeMode(request, { entity: 'dashboards', verb: 'write' });
+    if (writeMode === 'none') {
+      return NextResponse.json({ error: 'Not authorized' }, { status: 403 });
+    }
 
     const db = getDb();
     const body = await request.json().catch(() => ({}));

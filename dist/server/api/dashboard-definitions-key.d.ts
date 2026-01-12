@@ -5,11 +5,7 @@ export declare function GET(request: NextRequest, { params }: {
     params: {
         key: string;
     };
-}): Promise<NextResponse<{
-    data: any;
-}> | NextResponse<{
-    error: any;
-}>>;
+}): Promise<NextResponse<unknown>>;
 /**
  * PUT /api/dashboard-definitions/[key]
  *
@@ -26,9 +22,5 @@ export declare function PUT(request: NextRequest, { params }: {
     params: {
         key: string;
     };
-}): Promise<NextResponse<{
-    data: any;
-}> | NextResponse<{
-    error: any;
-}>>;
+}): Promise<NextResponse<unknown>>;
 //# sourceMappingURL=dashboard-definitions-key.d.ts.map

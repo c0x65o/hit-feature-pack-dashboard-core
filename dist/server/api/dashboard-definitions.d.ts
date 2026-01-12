@@ -13,11 +13,7 @@ export { postBodySchema } from './dashboard-definitions.schema';
  * Optional filtering:
  * - pack=<name>: include pack dashboards for that pack, plus globals if includeGlobal=true (default)
  */
-export declare function GET(request: NextRequest): Promise<NextResponse<{
-    data: any;
-}> | NextResponse<{
-    error: any;
-}>>;
+export declare function GET(request: NextRequest): Promise<NextResponse<unknown>>;
 /**
  * POST /api/dashboard-definitions
  *
@@ -32,9 +28,5 @@ export declare function GET(request: NextRequest): Promise<NextResponse<{
  *  - definition?: object (required unless sourceKey provided)
  *  - sourceKey?: string (optional; copies an existing dashboard, then applies overrides)
  */
-export declare function POST(request: NextRequest): Promise<NextResponse<{
-    data: any;
-}> | NextResponse<{
-    error: any;
-}>>;
+export declare function POST(request: NextRequest): Promise<NextResponse<unknown>>;
 //# sourceMappingURL=dashboard-definitions.d.ts.map
