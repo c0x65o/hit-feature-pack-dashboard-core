@@ -11,6 +11,7 @@ export type MetricsQueryBody = {
   entityIds?: string[];
   dataSourceId?: string;
   sourceGranularity?: string;
+  params?: Record<string, string | number | boolean | null>;
   dimensions?: Record<string, string | number | boolean | null>;
   groupBy?: string[];
   groupByEntityId?: boolean;
@@ -26,7 +27,9 @@ export type PieReportBlockV0 = {
   query: MetricsQueryBody;
 
   // How to interpret grouped rows
-  groupByKey: string; // e.g. "region"
+  groupByKey: string; // e.g. "stage_id" (used for grouping + drilldown filter key)
+  labelKey: string; // e.g. "stage_name" (used for display label)
+  rawKey: string; // e.g. "stage_id" (used for raw slice id)
   topN: number;
   otherLabel: string;
 };
@@ -38,6 +41,12 @@ export function normalizePieBlock(input: Partial<PieReportBlockV0>): PieReportBl
   const format = input.format === 'usd' ? 'usd' : 'number';
   const time: TimeMode = input.time === 'all_time' ? 'all_time' : 'inherit';
   const groupByKey = typeof input.groupByKey === 'string' && input.groupByKey.trim() ? input.groupByKey.trim() : 'region';
+  const labelKey = typeof (input as any).labelKey === 'string' && String((input as any).labelKey).trim()
+    ? String((input as any).labelKey).trim()
+    : groupByKey;
+  const rawKey = typeof (input as any).rawKey === 'string' && String((input as any).rawKey).trim()
+    ? String((input as any).rawKey).trim()
+    : groupByKey;
   const topN = Math.max(1, Math.min(25, Number(input.topN || 5) || 5));
   const otherLabel = typeof input.otherLabel === 'string' && input.otherLabel.trim() ? input.otherLabel.trim() : 'Other';
 
@@ -48,10 +57,12 @@ export function normalizePieBlock(input: Partial<PieReportBlockV0>): PieReportBl
     metricKey,
     bucket: 'none',
     agg: typeof q.agg === 'string' ? (q.agg as any) : 'sum',
-    // ensure groupBy includes groupByKey
-    groupBy: Array.from(new Set([...(Array.isArray(q.groupBy) ? q.groupBy : []), groupByKey].filter(Boolean))),
+    // ensure groupBy includes keys we need for grouping + labeling + raw ids
+    groupBy: Array.from(
+      new Set([...(Array.isArray(q.groupBy) ? q.groupBy : []), groupByKey, labelKey, rawKey].filter(Boolean))
+    ),
   };
 
-  return { kind: 'pie_v0', title, format, time, query, groupByKey, topN, otherLabel };
+  return { kind: 'pie_v0', title, format, time, query, groupByKey, labelKey, rawKey, topN, otherLabel };
 }
 

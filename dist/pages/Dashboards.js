@@ -931,6 +931,7 @@ export function Dashboards(props = {}) {
     const [pieSlices, setPieSlices] = React.useState({});
     const [apiPieSlices, setApiPieSlices] = React.useState({});
     const [apiTables, setApiTables] = React.useState({});
+    const [metricTables, setMetricTables] = React.useState({});
     const [lineSeries, setLineSeries] = React.useState({});
     const [lineBucketByWidgetKey, setLineBucketByWidgetKey] = React.useState({});
     const [projectNames, setProjectNames] = React.useState({});
@@ -1616,6 +1617,8 @@ export function Dashboards(props = {}) {
                     time: w?.time === 'all_time' ? 'all_time' : 'inherit',
                     query: { ...(w.query || {}) },
                     groupByKey: String(w?.presentation?.groupByKey || 'region'),
+                    labelKey: String(w?.presentation?.labelKey || ''),
+                    rawKey: String(w?.presentation?.rawKey || ''),
                     topN: Number(w?.presentation?.topN || 5),
                     otherLabel: String(w?.presentation?.otherLabel || 'Other'),
                 });
@@ -1711,6 +1714,71 @@ export function Dashboards(props = {}) {
                 }
                 catch {
                     setApiTables((p) => ({ ...p, [w.key]: { loading: false, rows: [], total: undefined } }));
+                }
+            }));
+        }
+        // Metric Table (metrics drilldown rendered as a table; supports computed metrics too)
+        const metricTableWidgets = widgets.filter((w) => w?.kind === 'metric_table');
+        if (metricTableWidgets.length) {
+            setMetricTables((prev) => {
+                const next = { ...prev };
+                for (const w of metricTableWidgets)
+                    next[w.key] = { loading: true, rows: prev[w.key]?.rows || [], total: prev[w.key]?.total };
+                return next;
+            });
+            await Promise.all(metricTableWidgets.map(async (w) => {
+                try {
+                    const pres = w?.presentation || {};
+                    const pageSize = Math.max(1, Math.min(100, Number(pres.pageSize || 10) || 10));
+                    const t = effectiveTime(w);
+                    const q = { ...(w.query || {}) };
+                    // pointFilter: use query fields (metricKey + dims + params) and attach time range if present
+                    const pointFilter = {
+                        metricKey: String(q.metricKey || '').trim(),
+                    };
+                    if (!pointFilter.metricKey)
+                        throw new Error('Missing query.metricKey for metric_table');
+                    if (q.entityKind)
+                        pointFilter.entityKind = q.entityKind;
+                    if (q.entityId)
+                        pointFilter.entityId = q.entityId;
+                    if (Array.isArray(q.entityIds))
+                        pointFilter.entityIds = q.entityIds;
+                    if (q.dataSourceId)
+                        pointFilter.dataSourceId = q.dataSourceId;
+                    if (q.sourceGranularity)
+                        pointFilter.sourceGranularity = q.sourceGranularity;
+                    if (q.params && typeof q.params === 'object')
+                        pointFilter.params = q.params;
+                    if (q.dimensions && typeof q.dimensions === 'object')
+                        pointFilter.dimensions = q.dimensions;
+                    if (t) {
+                        pointFilter.start = t.start;
+                        pointFilter.end = t.end;
+                    }
+                    const res = await fetchWithAuth('/api/metrics/drilldown', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ pointFilter, page: 1, pageSize, includeContributors: false }),
+                    });
+                    const json = await res.json().catch(() => ({}));
+                    if (!res.ok)
+                        throw new Error(json?.error || `metrics/drilldown ${res.status}`);
+                    const points = Array.isArray(json?.points) ? json.points : [];
+                    const rows = points.map((p) => ({
+                        id: String(p?.entityId || p?.id || ''),
+                        date: p?.date,
+                        value: p?.value,
+                        entityKind: p?.entityKind,
+                        entityId: p?.entityId,
+                        dataSourceId: p?.dataSourceId,
+                        ...(p?.dimensions && typeof p.dimensions === 'object' ? p.dimensions : {}),
+                    }));
+                    const total = Number(json?.pagination?.total ?? rows.length);
+                    setMetricTables((p) => ({ ...p, [w.key]: { loading: false, rows, total: Number.isFinite(total) ? total : undefined } }));
+                }
+                catch {
+                    setMetricTables((p) => ({ ...p, [w.key]: { loading: false, rows: [], total: undefined } }));
                 }
             }));
         }
@@ -2326,6 +2394,8 @@ export function Dashboards(props = {}) {
                                             pf.dataSourceId = q.dataSourceId.trim();
                                         if (typeof q.sourceGranularity === 'string' && q.sourceGranularity.trim())
                                             pf.sourceGranularity = q.sourceGranularity.trim();
+                                        if (q.params && typeof q.params === 'object')
+                                            pf.params = q.params;
                                         if (q.dimensions && typeof q.dimensions === 'object')
                                             pf.dimensions = q.dimensions;
                                         if (t) {
@@ -2457,6 +2527,43 @@ export function Dashboards(props = {}) {
                                     const renderCell = (row, col) => {
                                         const field = String(col?.field || '').trim();
                                         const label = String(col?.label || field || '');
+                                        const fmt = String(col?.format || '').toLowerCase();
+                                        const raw = field ? getByPath(row, field) : undefined;
+                                        if (fmt === 'usd')
+                                            return formatNumber(Number(raw ?? 0), 'usd');
+                                        if (fmt === 'number')
+                                            return formatNumber(Number(raw ?? 0), 'number');
+                                        if (fmt === 'datetime' || fmt === 'date') {
+                                            if (!raw)
+                                                return '—';
+                                            const d = new Date(String(raw));
+                                            if (!Number.isFinite(d.getTime()))
+                                                return String(raw);
+                                            return fmt === 'date' ? d.toLocaleDateString() : d.toLocaleString();
+                                        }
+                                        return raw == null ? '—' : String(raw);
+                                    };
+                                    return (_jsx("div", { className: spanClass, children: _jsx(Card, { title: w.title || 'Table', children: _jsx("div", { style: { padding: 14 }, children: st?.loading ? _jsx(Spinner, {}) : (_jsxs(_Fragment, { children: [_jsxs("div", { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }, children: [_jsx("div", { style: { fontSize: 12, color: colors.text.muted }, children: typeof st?.total === 'number' ? `${st.total.toLocaleString()} total` : `${rows.length.toLocaleString()} rows` }), rowHrefTemplate ? _jsx(Badge, { variant: "info", children: "click row to open" }) : null] }), _jsx("div", { style: { overflowX: 'auto', border: `1px solid ${colors.border.subtle}`, borderRadius: 10 }, children: _jsxs("table", { style: { width: '100%', borderCollapse: 'collapse', fontSize: 12 }, children: [_jsx("thead", { children: _jsx("tr", { style: { textAlign: 'left', background: colors.bg.muted }, children: cols.map((c, idx) => (_jsx("th", { style: { padding: '8px 10px' }, children: String(c?.label || c?.field || '') }, idx))) }) }), _jsxs("tbody", { children: [rows.map((r, idx) => {
+                                                                                const href = rowHrefTemplate ? applyTemplate(rowHrefTemplate, r) : '';
+                                                                                return (_jsx("tr", { style: { borderTop: `1px solid ${colors.border.subtle}`, cursor: href ? 'pointer' : 'default' }, onClick: () => {
+                                                                                        if (!href)
+                                                                                            return;
+                                                                                        openRouteDrill({ href, title: `${String(w.title || 'Table')} • ${String(r?.name || r?.id || '')}`.trim() });
+                                                                                    }, children: cols.map((c, j) => (_jsx("td", { style: { padding: '8px 10px', whiteSpace: 'nowrap' }, children: j === 0 && href ? (_jsx("a", { href: href, style: { color: colors.accent.default, textDecoration: 'none' }, onClick: (e) => {
+                                                                                                e.preventDefault();
+                                                                                                e.stopPropagation?.();
+                                                                                                openRouteDrill({ href, title: `${String(w.title || 'Table')} • ${String(r?.name || r?.id || '')}`.trim() });
+                                                                                            }, children: renderCell(r, c) })) : renderCell(r, c) }, j))) }, String(r?.id || idx)));
+                                                                            }), rows.length === 0 ? (_jsx("tr", { children: _jsx("td", { colSpan: Math.max(1, cols.length), style: { padding: '10px', color: colors.text.muted }, children: "No rows" }) })) : null] })] }) })] })) }) }) }, w.key));
+                                }
+                                if (w.kind === 'metric_table') {
+                                    const st = metricTables[w.key];
+                                    const rows = Array.isArray(st?.rows) ? st?.rows : [];
+                                    const pres = w?.presentation || {};
+                                    const cols = Array.isArray(pres.columns) ? pres.columns : [];
+                                    const rowHrefTemplate = typeof pres.rowHrefTemplate === 'string' ? pres.rowHrefTemplate : '';
+                                    const renderCell = (row, col) => {
+                                        const field = String(col?.field || '').trim();
                                         const fmt = String(col?.format || '').toLowerCase();
                                         const raw = field ? getByPath(row, field) : undefined;
                                         if (fmt === 'usd')

@@ -27,10 +27,12 @@ export async function runPieBlock(args) {
         throw new Error(json?.error || `metrics/query ${res.status}`);
     const rows = Array.isArray(json.data) ? json.data : [];
     const groupByKey = block.groupByKey;
+    const labelKey = block.labelKey || groupByKey;
+    const rawKey = block.rawKey || groupByKey;
     const normalized = rows
         .map((r) => ({
-        label: String(r && (groupByKey in r) ? (r[groupByKey] ?? 'Unknown') : 'Unknown'),
-        raw: r && (groupByKey in r) ? (r[groupByKey] ?? null) : null,
+        label: String(r && (labelKey in r) ? (r[labelKey] ?? 'Unknown') : 'Unknown'),
+        raw: r && (rawKey in r) ? (r[rawKey] ?? null) : null,
         value: Number(r?.value ?? 0),
     }))
         .sort((a, b) => b.value - a.value);
@@ -49,6 +51,8 @@ export async function runPieBlock(args) {
         basePointFilter.dataSourceId = block.query.dataSourceId;
     if (block.query.sourceGranularity)
         basePointFilter.sourceGranularity = block.query.sourceGranularity;
+    if (block.query.params && typeof block.query.params === 'object')
+        basePointFilter.params = { ...block.query.params };
     if (block.query.dimensions && typeof block.query.dimensions === 'object')
         basePointFilter.dimensions = { ...block.query.dimensions };
     if (t) {

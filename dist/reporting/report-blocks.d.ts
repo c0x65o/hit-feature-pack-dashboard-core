@@ -10,6 +10,7 @@ export type MetricsQueryBody = {
     entityIds?: string[];
     dataSourceId?: string;
     sourceGranularity?: string;
+    params?: Record<string, string | number | boolean | null>;
     dimensions?: Record<string, string | number | boolean | null>;
     groupBy?: string[];
     groupByEntityId?: boolean;
@@ -21,6 +22,8 @@ export type PieReportBlockV0 = {
     time: TimeMode;
     query: MetricsQueryBody;
     groupByKey: string;
+    labelKey: string;
+    rawKey: string;
     topN: number;
     otherLabel: string;
 };

@@ -492,6 +492,7 @@ type PointFilter = {
   entityIds?: string[];
   dataSourceId?: string;
   sourceGranularity?: string;
+  params?: Record<string, string | number | boolean | null>;
   dimensions?: Record<string, string | number | boolean | null>;
 };
 
@@ -1310,6 +1311,7 @@ export function Dashboards(props: DashboardsProps = {}) {
     Record<string, { loading: boolean; slices?: any[]; otherLabel?: string; error?: string }>
   >({});
   const [apiTables, setApiTables] = React.useState<Record<string, { loading: boolean; rows?: any[]; total?: number }>>({});
+  const [metricTables, setMetricTables] = React.useState<Record<string, { loading: boolean; rows?: any[]; total?: number }>>({});
   const [lineSeries, setLineSeries] = React.useState<
     Record<
       string,
@@ -2001,6 +2003,8 @@ export function Dashboards(props: DashboardsProps = {}) {
             time: w?.time === 'all_time' ? 'all_time' : 'inherit',
             query: { ...(w.query || {}) },
             groupByKey: String(w?.presentation?.groupByKey || 'region'),
+            labelKey: String(w?.presentation?.labelKey || ''),
+            rawKey: String(w?.presentation?.rawKey || ''),
             topN: Number(w?.presentation?.topN || 5),
             otherLabel: String(w?.presentation?.otherLabel || 'Other'),
           });
@@ -2099,6 +2103,65 @@ export function Dashboards(props: DashboardsProps = {}) {
             setApiTables((p) => ({ ...p, [w.key]: { loading: false, rows, total: (total != null && Number.isFinite(total)) ? total : undefined } }));
           } catch {
             setApiTables((p) => ({ ...p, [w.key]: { loading: false, rows: [], total: undefined } }));
+          }
+        })
+      );
+    }
+
+    // Metric Table (metrics drilldown rendered as a table; supports computed metrics too)
+    const metricTableWidgets = widgets.filter((w: any) => w?.kind === 'metric_table');
+    if (metricTableWidgets.length) {
+      setMetricTables((prev) => {
+        const next = { ...prev };
+        for (const w of metricTableWidgets) next[w.key] = { loading: true, rows: prev[w.key]?.rows || [], total: prev[w.key]?.total };
+        return next;
+      });
+      await Promise.all(
+        metricTableWidgets.map(async (w: any) => {
+          try {
+            const pres = w?.presentation || {};
+            const pageSize = Math.max(1, Math.min(100, Number(pres.pageSize || 10) || 10));
+            const t = effectiveTime(w);
+            const q = { ...(w.query || {}) };
+            // pointFilter: use query fields (metricKey + dims + params) and attach time range if present
+            const pointFilter: any = {
+              metricKey: String(q.metricKey || '').trim(),
+            };
+            if (!pointFilter.metricKey) throw new Error('Missing query.metricKey for metric_table');
+            if (q.entityKind) pointFilter.entityKind = q.entityKind;
+            if (q.entityId) pointFilter.entityId = q.entityId;
+            if (Array.isArray(q.entityIds)) pointFilter.entityIds = q.entityIds;
+            if (q.dataSourceId) pointFilter.dataSourceId = q.dataSourceId;
+            if (q.sourceGranularity) pointFilter.sourceGranularity = q.sourceGranularity;
+            if (q.params && typeof q.params === 'object') pointFilter.params = q.params;
+            if (q.dimensions && typeof q.dimensions === 'object') pointFilter.dimensions = q.dimensions;
+            if (t) {
+              pointFilter.start = t.start;
+              pointFilter.end = t.end;
+            }
+
+            const res = await fetchWithAuth('/api/metrics/drilldown', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ pointFilter, page: 1, pageSize, includeContributors: false }),
+            });
+            const json = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(json?.error || `metrics/drilldown ${res.status}`);
+
+            const points = Array.isArray(json?.points) ? json.points : [];
+            const rows = points.map((p: any) => ({
+              id: String(p?.entityId || p?.id || ''),
+              date: p?.date,
+              value: p?.value,
+              entityKind: p?.entityKind,
+              entityId: p?.entityId,
+              dataSourceId: p?.dataSourceId,
+              ...(p?.dimensions && typeof p.dimensions === 'object' ? p.dimensions : {}),
+            }));
+            const total = Number(json?.pagination?.total ?? rows.length);
+            setMetricTables((p) => ({ ...p, [w.key]: { loading: false, rows, total: Number.isFinite(total) ? total : undefined } }));
+          } catch {
+            setMetricTables((p) => ({ ...p, [w.key]: { loading: false, rows: [], total: undefined } }));
           }
         })
       );
@@ -2863,6 +2926,7 @@ export function Dashboards(props: DashboardsProps = {}) {
                   }
                   if (typeof q.dataSourceId === 'string' && q.dataSourceId.trim()) pf.dataSourceId = q.dataSourceId.trim();
                   if (typeof q.sourceGranularity === 'string' && q.sourceGranularity.trim()) pf.sourceGranularity = q.sourceGranularity.trim();
+                  if (q.params && typeof q.params === 'object') pf.params = q.params as any;
                   if (q.dimensions && typeof q.dimensions === 'object') pf.dimensions = q.dimensions as any;
                   if (t) { pf.start = t.start; pf.end = t.end; }
                   return pf;
@@ -3077,6 +3141,99 @@ export function Dashboards(props: DashboardsProps = {}) {
                 const renderCell = (row: any, col: any) => {
                   const field = String(col?.field || '').trim();
                   const label = String(col?.label || field || '');
+                  const fmt = String(col?.format || '').toLowerCase();
+                  const raw = field ? getByPath(row, field) : undefined;
+                  if (fmt === 'usd') return formatNumber(Number(raw ?? 0), 'usd');
+                  if (fmt === 'number') return formatNumber(Number(raw ?? 0), 'number');
+                  if (fmt === 'datetime' || fmt === 'date') {
+                    if (!raw) return '—';
+                    const d = new Date(String(raw));
+                    if (!Number.isFinite(d.getTime())) return String(raw);
+                    return fmt === 'date' ? d.toLocaleDateString() : d.toLocaleString();
+                  }
+                  return raw == null ? '—' : String(raw);
+                };
+
+                return (
+                  <div key={w.key} className={spanClass}>
+                    <Card title={w.title || 'Table'}>
+                      <div style={{ padding: 14 }}>
+                        {st?.loading ? <Spinner /> : (
+                          <>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                              <div style={{ fontSize: 12, color: colors.text.muted }}>
+                                {typeof st?.total === 'number' ? `${st.total.toLocaleString()} total` : `${rows.length.toLocaleString()} rows`}
+                              </div>
+                              {rowHrefTemplate ? <Badge variant="info">click row to open</Badge> : null}
+                            </div>
+                            <div style={{ overflowX: 'auto', border: `1px solid ${colors.border.subtle}`, borderRadius: 10 }}>
+                              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                                <thead>
+                                  <tr style={{ textAlign: 'left', background: colors.bg.muted }}>
+                                    {cols.map((c: any, idx: number) => (
+                                      <th key={idx} style={{ padding: '8px 10px' }}>{String(c?.label || c?.field || '')}</th>
+                                    ))}
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {rows.map((r: any, idx: number) => {
+                                    const href = rowHrefTemplate ? applyTemplate(rowHrefTemplate, r) : '';
+                                    return (
+                                      <tr
+                                        key={String(r?.id || idx)}
+                                        style={{ borderTop: `1px solid ${colors.border.subtle}`, cursor: href ? 'pointer' : 'default' }}
+                                        onClick={() => {
+                                          if (!href) return;
+                                          openRouteDrill({ href, title: `${String(w.title || 'Table')} • ${String(r?.name || r?.id || '')}`.trim() });
+                                        }}
+                                      >
+                                        {cols.map((c: any, j: number) => (
+                                          <td key={j} style={{ padding: '8px 10px', whiteSpace: 'nowrap' }}>
+                                            {j === 0 && href ? (
+                                              <a
+                                                href={href}
+                                                style={{ color: colors.accent.default, textDecoration: 'none' }}
+                                                onClick={(e: any) => {
+                                                  e.preventDefault();
+                                                  e.stopPropagation?.();
+                                                  openRouteDrill({ href, title: `${String(w.title || 'Table')} • ${String(r?.name || r?.id || '')}`.trim() });
+                                                }}
+                                              >
+                                                {renderCell(r, c)}
+                                              </a>
+                                            ) : renderCell(r, c)}
+                                          </td>
+                                        ))}
+                                      </tr>
+                                    );
+                                  })}
+                                  {rows.length === 0 ? (
+                                    <tr>
+                                      <td colSpan={Math.max(1, cols.length)} style={{ padding: '10px', color: colors.text.muted }}>
+                                        No rows
+                                      </td>
+                                    </tr>
+                                  ) : null}
+                                </tbody>
+                              </table>
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    </Card>
+                  </div>
+                );
+              }
+
+              if (w.kind === 'metric_table') {
+                const st = metricTables[w.key];
+                const rows = Array.isArray(st?.rows) ? st?.rows : [];
+                const pres = w?.presentation || {};
+                const cols = Array.isArray(pres.columns) ? pres.columns : [];
+                const rowHrefTemplate = typeof pres.rowHrefTemplate === 'string' ? pres.rowHrefTemplate : '';
+
+                const renderCell = (row: any, col: any) => {
+                  const field = String(col?.field || '').trim();
                   const fmt = String(col?.format || '').toLowerCase();
                   const raw = field ? getByPath(row, field) : undefined;
                   if (fmt === 'usd') return formatNumber(Number(raw ?? 0), 'usd');
