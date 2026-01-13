@@ -68,10 +68,6 @@ permissions:
       label: "Dashboard Read Scope = Own"
       description: "Read only dashboards you own."
       default_enabled: false
-    - key: dashboard-core.read.scope.ldd
-      label: "Dashboard Read Scope = LDD"
-      description: "Read dashboards you own (dashboards don't have LDD fields, so same as own)."
-      default_enabled: false
 
     - key: dashboard-core.write.scope.none
       label: "Dashboard Write Scope = None"
@@ -84,10 +80,6 @@ permissions:
     - key: dashboard-core.write.scope.own
       label: "Dashboard Write Scope = Own"
       description: "Edit only dashboards you own."
-      default_enabled: false
-    - key: dashboard-core.write.scope.ldd
-      label: "Dashboard Write Scope = LDD"
-      description: "Edit dashboards you own (dashboards don't have LDD fields, so same as own)."
       default_enabled: false
 
     # Dashboards override (optional): if set, overrides dashboard-core.read.scope.* for dashboards only.
@@ -103,10 +95,6 @@ permissions:
       label: "Dashboard Dashboards Read Scope = Own"
       description: "Read only dashboards you own."
       default_enabled: false
-    - key: dashboard-core.dashboards.read.scope.ldd
-      label: "Dashboard Dashboards Read Scope = LDD"
-      description: "Read dashboards you own (dashboards don't have LDD fields, so same as own)."
-      default_enabled: false
 
     - key: dashboard-core.dashboards.write.scope.none
       label: "Dashboard Dashboards Write Scope = None"
@@ -119,10 +107,6 @@ permissions:
     - key: dashboard-core.dashboards.write.scope.own
       label: "Dashboard Dashboards Write Scope = Own"
       description: "Edit only dashboards you own."
-      default_enabled: false
-    - key: dashboard-core.dashboards.write.scope.ldd
-      label: "Dashboard Dashboards Write Scope = LDD"
-      description: "Edit dashboards you own (dashboards don't have LDD fields, so same as own)."
       default_enabled: false
 
     - key: dashboard-core.dashboards.create
