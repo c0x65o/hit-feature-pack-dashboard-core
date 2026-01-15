@@ -28,5 +28,5 @@ export declare function GET(request: NextRequest): Promise<NextResponse<unknown>
  *  - definition?: object (required unless sourceKey provided)
  *  - sourceKey?: string (optional; copies an existing dashboard, then applies overrides)
  */
-export declare function POST(request: NextRequest): Promise<NextResponse<unknown>>;
+export declare function POST(request: NextRequest): Promise<Response>;
 //# sourceMappingURL=dashboard-definitions.d.ts.map

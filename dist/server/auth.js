@@ -128,15 +128,6 @@ export async function requirePageAccess(request, pagePath) {
     const bearer = getForwardedBearerFromRequest(request);
     if (!bearer)
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    // IMPORTANT (prod parity):
-    // Many deployed environments inject X-HIT-Service-Token on the *incoming* request to the app
-    // (so modules can resolve config/db via provisioner). Server-side fetches to our own proxy
-    // must forward it explicitly; `credentials: 'include'` does not forward headers in Next's
-    // server runtime.
-    const serviceToken = request.headers.get('x-hit-service-token') ||
-        request.headers.get('X-HIT-Service-Token') ||
-        process.env.HIT_SERVICE_TOKEN ||
-        '';
     const { baseUrl, source } = getAuthBaseUrl(request);
     const frontendBaseUrl = getFrontendBaseUrlFromRequest(request);
     try {
@@ -147,7 +138,6 @@ export async function requirePageAccess(request, pagePath) {
             headers: {
                 'Content-Type': 'application/json',
                 Authorization: bearer,
-                ...(serviceToken ? { 'X-HIT-Service-Token': serviceToken } : {}),
                 ...(frontendBaseUrl ? { 'X-Frontend-Base-URL': frontendBaseUrl } : {}),
             },
             credentials: 'include',
