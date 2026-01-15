@@ -51,7 +51,7 @@ permissions:
     #
     # Scope modes:
     # - none: deny all access for this verb/entity (hide pages + block APIs)
-    # - any: ignore scope (read everything, respecting visibility and shares)
+    # - all: ignore scope (read everything, respecting visibility and shares)
     # - own: only owned dashboards (dashboard.owner_user_id === current user id)
     # - ldd: same as own (dashboards don't have LDD fields, so can't check LDD)
     #
@@ -60,8 +60,8 @@ permissions:
       label: "Dashboard Read Scope = None"
       description: "Deny all dashboard read access."
       default_enabled: false
-    - key: dashboard-core.read.scope.any
-      label: "Dashboard Read Scope = Any"
+    - key: dashboard-core.read.scope.all
+      label: "Dashboard Read Scope = All"
       description: "Read all dashboards regardless of ownership (respects visibility and shares)."
       default_enabled: false
     - key: dashboard-core.read.scope.own
@@ -73,8 +73,8 @@ permissions:
       label: "Dashboard Write Scope = None"
       description: "Deny all dashboard write access."
       default_enabled: false
-    - key: dashboard-core.write.scope.any
-      label: "Dashboard Write Scope = Any"
+    - key: dashboard-core.write.scope.all
+      label: "Dashboard Write Scope = All"
       description: "Edit all dashboards regardless of ownership (respects shares)."
       default_enabled: false
     - key: dashboard-core.write.scope.own
@@ -87,8 +87,8 @@ permissions:
       label: "Dashboard Dashboards Read Scope = None"
       description: "Deny all dashboard read access."
       default_enabled: false
-    - key: dashboard-core.dashboards.read.scope.any
-      label: "Dashboard Dashboards Read Scope = Any"
+    - key: dashboard-core.dashboards.read.scope.all
+      label: "Dashboard Dashboards Read Scope = All"
       description: "Read all dashboards regardless of ownership (respects visibility and shares)."
       default_enabled: false
     - key: dashboard-core.dashboards.read.scope.own
@@ -100,8 +100,8 @@ permissions:
       label: "Dashboard Dashboards Write Scope = None"
       description: "Deny all dashboard write access."
       default_enabled: false
-    - key: dashboard-core.dashboards.write.scope.any
-      label: "Dashboard Dashboards Write Scope = Any"
+    - key: dashboard-core.dashboards.write.scope.all
+      label: "Dashboard Dashboards Write Scope = All"
       description: "Edit all dashboards regardless of ownership (respects shares)."
       default_enabled: false
     - key: dashboard-core.dashboards.write.scope.own
