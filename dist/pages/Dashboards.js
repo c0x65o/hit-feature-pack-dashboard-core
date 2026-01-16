@@ -91,6 +91,20 @@ function resolvePlatformIcon(name) {
     // but also allow passing "si:..." if you want guaranteed brand icons.
     return tryLucide(val) || trySimple(val);
 }
+function isLddSharingEnabled() {
+    try {
+        if (typeof window === 'undefined')
+            return false;
+        const cfg = window.__HIT_CONFIG || {};
+        const fp = cfg?.featurePacks || {};
+        // Canonical flag (set in hit.yaml feature_packs[].options):
+        // featurePacks['erp-shell-core'].sharing.ldd: true
+        return Boolean(fp?.['erp-shell-core']?.sharing?.ldd === true || fp?.['dashboard-core']?.sharing?.ldd === true);
+    }
+    catch {
+        return false;
+    }
+}
 function selectValue(v) {
     return typeof v === 'string' ? v : String(v?.target?.value ?? '');
 }
@@ -2608,11 +2622,16 @@ export function Dashboards(props = {}) {
                                 return (_jsx("div", { className: spanClass, children: _jsx(Card, { title: w.title || w.kind, children: _jsxs("div", { style: { padding: 14, opacity: 0.75, fontSize: 12 }, children: ["Unsupported widget kind: ", String(w.kind)] }) }) }, w.key));
                             })) : null] }), _jsx(Modal, { open: shareOpen, onClose: () => setShareOpen(false), title: "Share dashboard", description: definition ? `ACL for ${definition.name}` : '', children: _jsxs("div", { style: { padding: 12 }, children: [sharesError ? _jsx("div", { style: { color: '#ef4444', fontSize: 13, marginBottom: 10 }, children: sharesError }) : null, sharesLoading ? _jsx(Spinner, {}) : (_jsx(AclPicker, { config: {
                                         mode: 'granular',
-                                        principals: { users: true, groups: true, roles: true },
+                                        // Cast to any: LDD principal types (locations/divisions/departments) not yet in @hit/ui-kit types
+                                        principals: (isLddSharingEnabled()
+                                            ? { users: true, groups: true, roles: true, locations: true, divisions: true, departments: true }
+                                            : { users: true, groups: true, roles: true }),
                                         granularPermissions: [{ key: 'READ', label: 'Read' }],
-                                    }, disabled: !definition, loading: sharesLoading, error: sharesError, fetchPrincipals: createFetchPrincipals({ isAdmin: true }), entries: shares
-                                        .filter((s) => s.principalType === 'user' || s.principalType === 'group' || s.principalType === 'role')
-                                        .map((s) => ({
+                                    }, disabled: !definition, loading: sharesLoading, error: sharesError, fetchPrincipals: createFetchPrincipals({ isAdmin: true }), 
+                                    // Cast to any: LDD principal types not yet in @hit/ui-kit AclEntry type
+                                    entries: (isLddSharingEnabled()
+                                        ? shares
+                                        : shares.filter((s) => s.principalType === 'user' || s.principalType === 'group' || s.principalType === 'role')).map((s) => ({
                                         id: s.id,
                                         principalType: s.principalType,
                                         principalId: s.principalId,

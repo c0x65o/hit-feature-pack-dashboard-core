@@ -161,6 +161,19 @@ type ShareRow = {
   createdAt: string;
 };
 
+function isLddSharingEnabled(): boolean {
+  try {
+    if (typeof window === 'undefined') return false;
+    const cfg = (window as any).__HIT_CONFIG || {};
+    const fp = cfg?.featurePacks || {};
+    // Canonical flag (set in hit.yaml feature_packs[].options):
+    // featurePacks['erp-shell-core'].sharing.ldd: true
+    return Boolean(fp?.['erp-shell-core']?.sharing?.ldd === true || fp?.['dashboard-core']?.sharing?.ldd === true);
+  } catch {
+    return false;
+  }
+}
+
 type TimePreset =
   | 'last_7_days'
   | 'last_30_days'
@@ -3382,21 +3395,26 @@ export function Dashboards(props: DashboardsProps = {}) {
               <AclPicker
                 config={{
                   mode: 'granular',
-                  principals: { users: true, groups: true, roles: true },
+                  // Cast to any: LDD principal types (locations/divisions/departments) not yet in @hit/ui-kit types
+                  principals: (isLddSharingEnabled()
+                    ? { users: true, groups: true, roles: true, locations: true, divisions: true, departments: true }
+                    : { users: true, groups: true, roles: true }) as any,
                   granularPermissions: [{ key: 'READ', label: 'Read' }],
                 }}
                 disabled={!definition}
                 loading={sharesLoading}
                 error={sharesError}
                 fetchPrincipals={createFetchPrincipals({ isAdmin: true })}
-                entries={shares
-                  .filter((s) => s.principalType === 'user' || s.principalType === 'group' || s.principalType === 'role')
-                  .map((s) => ({
-                    id: s.id,
-                    principalType: s.principalType as 'user' | 'group' | 'role',
-                    principalId: s.principalId,
-                    permissions: ['READ'],
-                  }))}
+                // Cast to any: LDD principal types not yet in @hit/ui-kit AclEntry type
+                entries={(isLddSharingEnabled()
+                  ? shares
+                  : shares.filter((s) => s.principalType === 'user' || s.principalType === 'group' || s.principalType === 'role')
+                ).map((s) => ({
+                  id: s.id,
+                  principalType: s.principalType,
+                  principalId: s.principalId,
+                  permissions: ['READ'],
+                })) as any}
                 onAdd={async (entry: any) => {
                   if (!definition) return;
                   const res = await fetchWithAuth(`/api/dashboard-definitions/${encodeURIComponent(definition.key)}/shares`, {
