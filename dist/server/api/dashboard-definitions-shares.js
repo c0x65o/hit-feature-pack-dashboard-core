@@ -81,7 +81,7 @@ export async function GET(request, { params }) {
 }
 /**
  * POST: add share entry
- * Body: { principalType: 'user' | 'group' | 'role', principalId: string, permission?: 'view' | 'full' }
+ * Body: { principalType: 'user' | 'group' | 'role' | 'location' | 'division' | 'department', principalId: string, permission?: 'view' | 'full' }
  */
 export async function POST(request, { params }) {
     try {
@@ -100,8 +100,13 @@ export async function POST(request, { params }) {
         if (!principalType || !principalId) {
             return NextResponse.json({ error: 'principalType and principalId are required' }, { status: 400 });
         }
-        if (!['user', 'group', 'role'].includes(principalType)) {
-            return NextResponse.json({ error: 'principalType must be user, group, or role' }, { status: 400 });
+        if (!['user', 'group', 'role', 'location', 'division', 'department'].includes(principalType)) {
+            return NextResponse.json({ error: 'principalType must be user, group, role, location, division, or department' }, { status: 400 });
+        }
+        // Keep non-user sharing admin-only (matches principal option fetchers and prevents 403 churn for regular users).
+        const isProbablyAdmin = Array.isArray(user.roles) && user.roles.some((r) => String(r || '').toLowerCase() === 'admin');
+        if (!isProbablyAdmin && principalType !== 'user') {
+            return NextResponse.json({ error: 'Only admins can share with non-user principals (groups, roles, or LDD)' }, { status: 403 });
         }
         const db = getDb();
         const dash = await loadDashboardByKey(db, key);

@@ -69,7 +69,12 @@ export function extractUserFromRequest(request) {
         const xUserEmail = request.headers.get('x-user-email') || '';
         const xUserName = request.headers.get('x-user-name') || xUserEmail || '';
         const xUserRoles = request.headers.get('x-user-roles');
-        const roles = xUserRoles ? xUserRoles.split(',').map((r) => r.trim()).filter(Boolean) : [];
+        const roles = xUserRoles
+            ? xUserRoles
+                .split(',')
+                .map((r) => r.trim())
+                .filter(Boolean)
+            : [];
         const xUserGroupIds = request.headers.get('x-user-group-ids') || request.headers.get('x-user-groups');
         const groups = xUserGroupIds
             ? xUserGroupIds
@@ -107,7 +112,8 @@ function getForwardedBearerFromRequest(request) {
 function getAuthProxyBaseUrlFromRequest(request) {
     // Server-side fetch() requires absolute URL.
     const origin = new URL(request.url).origin;
-    return `${origin}/api/proxy/auth`;
+    // Auth is app-local (Next.js API dispatcher under /api/auth).
+    return `${origin}/api/auth`;
 }
 function getFrontendBaseUrlFromRequest(request) {
     const host = request.headers.get('x-forwarded-host') || request.headers.get('host') || '';
@@ -115,16 +121,20 @@ function getFrontendBaseUrlFromRequest(request) {
     return host ? `${proto}://${host}` : new URL(request.url).origin;
 }
 function getAuthBaseUrl(request) {
-    const envUrl = process.env.HIT_AUTH_URL || process.env.NEXT_PUBLIC_HIT_AUTH_URL;
-    if (envUrl && String(envUrl).trim()) {
-        return { baseUrl: String(envUrl).trim().replace(/\/$/, ''), source: 'env' };
-    }
-    return { baseUrl: getAuthProxyBaseUrlFromRequest(request).replace(/\/$/, ''), source: 'proxy' };
+    // No external auth base URL. Always use app-local auth API.
+    return { baseUrl: getAuthProxyBaseUrlFromRequest(request).replace(/\/$/, ''), source: 'local' };
 }
 export async function requirePageAccess(request, pagePath) {
     const user = extractUserFromRequest(request);
     if (!user?.sub)
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    // Admins always have access to pages (defaultRolesAllow) and should not be blocked
+    // by transient auth module/proxy outages.
+    const isAdmin = (user.roles || [])
+        .map((r) => String(r || '').trim().toLowerCase())
+        .includes('admin');
+    if (isAdmin)
+        return user;
     const bearer = getForwardedBearerFromRequest(request);
     if (!bearer)
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -163,8 +173,8 @@ export async function requirePageAccess(request, pagePath) {
     }
     catch (e) {
         return NextResponse.json({
-            error: 'Forbidden',
-            code: 'page_access_denied',
+            error: 'Auth service unavailable',
+            code: 'auth_unavailable',
             pagePath,
             authz: {
                 status: null,
@@ -173,6 +183,6 @@ export async function requirePageAccess(request, pagePath) {
                 authBaseUrl: baseUrl,
                 message: e?.message ? String(e.message) : 'Auth check threw',
             },
-        }, { status: 403 });
+        }, { status: 503 });
     }
 }

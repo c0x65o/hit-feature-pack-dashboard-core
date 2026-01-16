@@ -153,7 +153,7 @@ type MetricCatalogItem = {
 
 type ShareRow = {
   id: string;
-  principalType: 'user' | 'group' | 'role';
+  principalType: 'user' | 'group' | 'role' | 'location' | 'division' | 'department';
   principalId: string;
   permission: 'view' | 'full';
   sharedBy: string;
@@ -3389,12 +3389,14 @@ export function Dashboards(props: DashboardsProps = {}) {
                 loading={sharesLoading}
                 error={sharesError}
                 fetchPrincipals={createFetchPrincipals({ isAdmin: true })}
-                entries={shares.map((s) => ({
-                  id: s.id,
-                  principalType: s.principalType,
-                  principalId: s.principalId,
-                  permissions: ['READ'],
-                }))}
+                entries={shares
+                  .filter((s) => s.principalType === 'user' || s.principalType === 'group' || s.principalType === 'role')
+                  .map((s) => ({
+                    id: s.id,
+                    principalType: s.principalType as 'user' | 'group' | 'role',
+                    principalId: s.principalId,
+                    permissions: ['READ'],
+                  }))}
                 onAdd={async (entry: any) => {
                   if (!definition) return;
                   const res = await fetchWithAuth(`/api/dashboard-definitions/${encodeURIComponent(definition.key)}/shares`, {

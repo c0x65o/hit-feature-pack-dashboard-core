@@ -2610,7 +2610,9 @@ export function Dashboards(props = {}) {
                                         mode: 'granular',
                                         principals: { users: true, groups: true, roles: true },
                                         granularPermissions: [{ key: 'READ', label: 'Read' }],
-                                    }, disabled: !definition, loading: sharesLoading, error: sharesError, fetchPrincipals: createFetchPrincipals({ isAdmin: true }), entries: shares.map((s) => ({
+                                    }, disabled: !definition, loading: sharesLoading, error: sharesError, fetchPrincipals: createFetchPrincipals({ isAdmin: true }), entries: shares
+                                        .filter((s) => s.principalType === 'user' || s.principalType === 'group' || s.principalType === 'role')
+                                        .map((s) => ({
                                         id: s.id,
                                         principalType: s.principalType,
                                         principalId: s.principalId,

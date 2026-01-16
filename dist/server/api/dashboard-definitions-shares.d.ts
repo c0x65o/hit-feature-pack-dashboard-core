@@ -11,7 +11,7 @@ export declare function GET(request: NextRequest, { params }: {
 }): Promise<NextResponse<unknown>>;
 /**
  * POST: add share entry
- * Body: { principalType: 'user' | 'group' | 'role', principalId: string, permission?: 'view' | 'full' }
+ * Body: { principalType: 'user' | 'group' | 'role' | 'location' | 'division' | 'department', principalId: string, permission?: 'view' | 'full' }
  */
 export declare function POST(request: NextRequest, { params }: {
     params: {
