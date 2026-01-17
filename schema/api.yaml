@@ -1,0 +1,12 @@
+version: 1
+
+# Pack-owned "special" API routes (schema-visible).
+#
+# These are endpoints that are NOT the schema-generated CRUD routes derived from `entities.*.api.resource`.
+# They must be explicitly declared here so `hit schema validate` can enforce consistency and prevent drift.
+api:
+  routes:
+    - path: /api/dashboard-definitions/[key]/shares
+      methods: [GET, POST, DELETE]
+      handler: dashboard-definitions-shares
+      description: "List/add/remove share entries for a dashboard definition (ACL)"
