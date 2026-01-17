@@ -2,9 +2,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { sql } from 'drizzle-orm';
-import { extractUserFromRequest, requirePageAccess } from '../auth';
+import { requirePageAccess } from '../auth';
 import { resolveUserOrgScope, resolveUserPrincipals } from '@hit/feature-pack-auth-core/server/lib/acl-utils';
 import { resolveDashboardCoreScopeMode } from '../lib/scope-mode';
+import { getStaticDashboardByKey } from '../lib/static-dashboards';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -22,6 +23,40 @@ export async function GET(request: NextRequest, { params }: { params: { key: str
     
     // Resolve scope mode for read access
     const mode = await resolveDashboardCoreScopeMode(request, { entity: 'dashboards', verb: 'read' });
+
+    const staticDashboard = getStaticDashboardByKey(key);
+    if (staticDashboard) {
+      const isOwner = staticDashboard.ownerUserId === user.sub;
+      const canRead =
+        mode === 'none'
+          ? false
+          : mode === 'own' || mode === 'ldd'
+            ? isOwner
+            : staticDashboard.visibility === 'public' || isOwner;
+      if (!canRead) {
+        return NextResponse.json({ error: 'Access denied' }, { status: 403 });
+      }
+
+      return NextResponse.json({
+        data: {
+          id: staticDashboard.id,
+          key: staticDashboard.key,
+          name: staticDashboard.name,
+          description: staticDashboard.description,
+          ownerUserId: staticDashboard.ownerUserId,
+          isSystem: staticDashboard.isSystem,
+          visibility: staticDashboard.visibility,
+          scope: staticDashboard.scope,
+          version: staticDashboard.version,
+          definition: staticDashboard.definition,
+          updatedAt: staticDashboard.updatedAt,
+          isOwner,
+          isShared: false,
+          canEdit: false,
+          _static: true,
+        },
+      });
+    }
 
     const principals = await resolveUserPrincipals({ request, user });
     const userGroups = principals.groupIds || [];
@@ -182,6 +217,10 @@ export async function PUT(request: NextRequest, { params }: { params: { key: str
 
     const key = decodeURIComponent(params.key || '').trim();
     if (!key) return NextResponse.json({ error: 'Missing key' }, { status: 400 });
+
+    if (getStaticDashboardByKey(key)) {
+      return NextResponse.json({ error: 'System dashboards cannot be updated. Copy it first.' }, { status: 403 });
+    }
 
     const db = getDb();
     const body = await request.json().catch(() => ({}));

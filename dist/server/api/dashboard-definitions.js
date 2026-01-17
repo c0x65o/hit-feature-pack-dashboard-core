@@ -7,8 +7,7 @@ import crypto from 'node:crypto';
 import { resolveUserOrgScope, resolveUserPrincipals } from '@hit/feature-pack-auth-core/server/lib/acl-utils';
 import { resolveDashboardCoreScopeMode } from '../lib/scope-mode';
 import { requireDashboardCoreAction } from '../lib/require-action';
-import fs from 'node:fs';
-import path from 'node:path';
+import { getStaticDashboardByKey, getStaticDashboardsForPack } from '../lib/static-dashboards';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 // Re-export schema(s) from a schema-only module so capability generation can import them safely.
@@ -34,9 +33,6 @@ export async function GET(request) {
         const { searchParams } = new URL(request.url);
         const pack = (searchParams.get('pack') || '').trim();
         const includeGlobal = (searchParams.get('includeGlobal') || 'true').toLowerCase() !== 'false';
-        // Ensure pack dashboards exist out-of-the-box.
-        // Some environments skip app seeds; this makes dashboards reliably available.
-        await ensureDefaultPackDashboards(db, pack);
         // Resolve scope mode for read access
         const mode = await resolveDashboardCoreScopeMode(request, { entity: 'dashboards', verb: 'read' });
         // Apply scope-based filtering (explicit branching on none/own/ldd/any)
@@ -160,7 +156,54 @@ export async function GET(request) {
         case when d.scope->>'kind' = 'global' then 0 else 1 end,
         d.name asc
     `);
-        return NextResponse.json({ data: rows.rows || [] });
+        const dbRows = (rows.rows || []);
+        const canReadStatic = (d) => {
+            if (mode === 'none')
+                return false;
+            if (mode === 'own' || mode === 'ldd')
+                return d.ownerUserId === user.sub;
+            if (mode === 'any')
+                return d.visibility === 'public' || d.ownerUserId === user.sub;
+            return d.ownerUserId === user.sub;
+        };
+        const staticDashboards = getStaticDashboardsForPack(pack, includeGlobal)
+            .filter(canReadStatic)
+            .map((d) => ({
+            id: d.id,
+            key: d.key,
+            name: d.name,
+            description: d.description,
+            ownerUserId: d.ownerUserId,
+            isSystem: d.isSystem,
+            visibility: d.visibility,
+            scope: d.scope,
+            version: d.version,
+            updatedAt: d.updatedAt,
+            shareCount: 0,
+            isOwner: d.ownerUserId === user.sub,
+            isShared: false,
+            canEdit: false,
+            _static: true,
+        }));
+        const staticKeys = new Set(staticDashboards.map((d) => String(d.key || '')));
+        const merged = [
+            ...staticDashboards,
+            ...dbRows.filter((r) => !staticKeys.has(String(r?.key || ''))),
+        ];
+        const scopeRank = (d) => (d?.scope?.kind === 'global' ? 0 : 1);
+        merged.sort((a, b) => {
+            const aRank = scopeRank(a);
+            const bRank = scopeRank(b);
+            if (aRank !== bRank)
+                return aRank - bRank;
+            const nameCmp = String(a?.name || '').localeCompare(String(b?.name || ''), undefined, {
+                sensitivity: 'base',
+            });
+            if (nameCmp !== 0)
+                return nameCmp;
+            return String(a?.key || '').localeCompare(String(b?.key || ''));
+        });
+        return NextResponse.json({ data: merged });
     }
     catch (error) {
         console.error('Failed to list dashboard definitions:', error);
@@ -168,322 +211,332 @@ export async function GET(request) {
     }
 }
 async function ensureDefaultPackDashboards(db, pack) {
+    // Deprecated: static dashboards are merged at read time.
+    return;
+    /*
     const requestedPack = String(pack || '').trim();
+  
     // Prefer pack-owned templates compiled by `hit run` into `.hit/generated/dashboard-templates.json`.
     // This allows each feature pack to ship templates without requiring changes to dashboard-core.
     //
     // IMPORTANT: We auto-install templates for *all enabled packs* (not just the requested pack).
     // This keeps new packs “just working” everywhere without requiring manual SQL copy/paste.
     try {
-        const registryPath = path.join(process.cwd(), '.hit', 'generated', 'dashboard-templates.json');
-        if (fs.existsSync(registryPath)) {
-            const raw = fs.readFileSync(registryPath, 'utf8');
-            const reg = JSON.parse(raw);
-            const templatesAll = Array.isArray(reg?.templates) ? reg.templates : [];
-            const templates = templatesAll
-                .map((t) => ({
-                ...t,
-                packName: String(t?.packName || '').trim(),
-                templateKey: String(t?.templateKey || '').trim(),
-            }))
-                .filter((t) => t.packName && t.templateKey);
-            if (templates.length > 0) {
-                const now = new Date();
-                for (const t of templates) {
-                    const templatePack = String(t?.packName || '').trim();
-                    if (!templatePack)
-                        continue;
-                    // If the endpoint is pack-scoped, we can skip unrelated templates.
-                    // But if requestedPack is empty, we install all templates.
-                    if (requestedPack && templatePack !== requestedPack)
-                        continue;
-                    const key = String(t?.templateKey || '').trim();
-                    const name = String(t?.title || key || `${templatePack} dashboard`).trim();
-                    const description = t?.description != null ? String(t.description) : null;
-                    const version = Number.isFinite(Number(t?.version)) ? Number(t.version) : 0;
-                    const definition = normalizeDefinition(t?.definition);
-                    const scope = { kind: 'pack', pack: templatePack };
-                    if (!key || !name)
-                        continue;
-                    await db.execute(sql `
-            insert into "dashboard_definitions" (
-              id,
-              key,
-              owner_user_id,
-              is_system,
-              name,
-              description,
-              visibility,
-              scope,
-              version,
-              definition,
-              created_at,
-              updated_at
-            ) values (
-              gen_random_uuid(),
-              ${key},
-              'system',
-              true,
-              ${name},
-              ${description},
-              'public',
-              ${JSON.stringify(scope)}::jsonb,
-              ${version},
-              ${JSON.stringify(definition)}::jsonb,
-              ${now},
-              ${now}
-            )
-            on conflict (key) do update set
-              name = excluded.name,
-              description = excluded.description,
-              visibility = excluded.visibility,
-              scope = excluded.scope,
-              version = excluded.version,
-              definition = excluded.definition,
-              updated_at = excluded.updated_at
-            where
-              "dashboard_definitions".is_system = true
-              and excluded.version >= "dashboard_definitions".version
-          `);
-                }
-                return;
-            }
+      const registryPath = path.join(process.cwd(), '.hit', 'generated', 'dashboard-templates.json');
+      if (fs.existsSync(registryPath)) {
+        const raw = fs.readFileSync(registryPath, 'utf8');
+        const reg = JSON.parse(raw);
+        const templatesAll = Array.isArray(reg?.templates) ? (reg.templates as any[]) : [];
+        const templates = templatesAll
+          .map((t: any) => ({
+            ...t,
+            packName: String(t?.packName || '').trim(),
+            templateKey: String(t?.templateKey || '').trim(),
+          }))
+          .filter((t: any) => t.packName && t.templateKey);
+  
+        if (templates.length > 0) {
+          const now = new Date();
+          for (const t of templates) {
+            const templatePack = String(t?.packName || '').trim();
+            if (!templatePack) continue;
+  
+            // If the endpoint is pack-scoped, we can skip unrelated templates.
+            // But if requestedPack is empty, we install all templates.
+            if (requestedPack && templatePack !== requestedPack) continue;
+  
+            const key = String(t?.templateKey || '').trim();
+            const name = String(t?.title || key || `${templatePack} dashboard`).trim();
+            const description = t?.description != null ? String(t.description) : null;
+            const version = Number.isFinite(Number(t?.version)) ? Number(t.version) : 0;
+            const definition = normalizeDefinition(t?.definition);
+            const scope = { kind: 'pack', pack: templatePack };
+  
+            if (!key || !name) continue;
+  
+            await db.execute(sql`
+              insert into "dashboard_definitions" (
+                id,
+                key,
+                owner_user_id,
+                is_system,
+                name,
+                description,
+                visibility,
+                scope,
+                version,
+                definition,
+                created_at,
+                updated_at
+              ) values (
+                gen_random_uuid(),
+                ${key},
+                'system',
+                true,
+                ${name},
+                ${description},
+                'public',
+                ${JSON.stringify(scope)}::jsonb,
+                ${version},
+                ${JSON.stringify(definition)}::jsonb,
+                ${now},
+                ${now}
+              )
+              on conflict (key) do update set
+                name = excluded.name,
+                description = excluded.description,
+                visibility = excluded.visibility,
+                scope = excluded.scope,
+                version = excluded.version,
+                definition = excluded.definition,
+                updated_at = excluded.updated_at
+              where
+                "dashboard_definitions".is_system = true
+                and excluded.version >= "dashboard_definitions".version
+            `);
+          }
+          return;
         }
+      }
+    } catch {
+      // ignore and fall back to legacy seeding below
     }
-    catch {
-        // ignore and fall back to legacy seeding below
-    }
+  
     // Legacy fallback (pre-template registry). Kept for compatibility while packs migrate templates.
     // Only seed for the packs we want as default business dashboards.
     const p = requestedPack;
-    if (!p)
-        return;
-    if (p !== 'crm' && p !== 'projects')
-        return;
+    if (!p) return;
+    if (p !== 'crm' && p !== 'projects') return;
+  
     const now = new Date();
+  
     if (p === 'projects') {
-        const key = 'system.projects_kpi_catalog';
-        const scope = { kind: 'pack', pack: 'projects' };
-        const definition = {
-            time: { mode: 'picker', default: 'last_30_days' },
-            layout: { grid: { cols: 12, rowHeight: 36, gap: 14 } },
-            widgets: [
-                {
-                    key: 'kpi_catalog.project_metrics',
-                    kind: 'kpi_catalog',
-                    title: 'All Metrics (Auto-scoped totals)',
-                    grid: { x: 0, y: 0, w: 12, h: 8 },
-                    time: 'inherit',
-                    presentation: {
-                        entityKind: 'auto',
-                        owner: { kind: 'feature_pack', id: 'projects' },
-                        onlyWithPoints: false,
-                    },
-                },
-            ],
-        };
-        await db.execute(sql `
-      insert into "dashboard_definitions" (
-        id,
-        key,
-        owner_user_id,
-        is_system,
-        name,
-        description,
-        visibility,
-        scope,
-        version,
-        definition,
-        created_at,
-        updated_at
-      ) values (
-        gen_random_uuid(),
-        ${key},
-        'system',
-        true,
-        'All Project KPIs',
-        'KPI-only dashboard that shows every project-scoped metric (with icons) summed across all projects.',
-        'public',
-        ${JSON.stringify(scope)}::jsonb,
-        0,
-        ${JSON.stringify(definition)}::jsonb,
-        ${now},
-        ${now}
-      )
-      on conflict (key) do update set
-        name = excluded.name,
-        description = excluded.description,
-        visibility = excluded.visibility,
-        scope = excluded.scope,
-        version = excluded.version,
-        definition = excluded.definition,
-        updated_at = excluded.updated_at
-    `);
+      const key = 'system.projects_kpi_catalog';
+      const scope = { kind: 'pack', pack: 'projects' };
+      const definition = {
+        time: { mode: 'picker', default: 'last_30_days' },
+        layout: { grid: { cols: 12, rowHeight: 36, gap: 14 } },
+        widgets: [
+          {
+            key: 'kpi_catalog.project_metrics',
+            kind: 'kpi_catalog',
+            title: 'All Metrics (Auto-scoped totals)',
+            grid: { x: 0, y: 0, w: 12, h: 8 },
+            time: 'inherit',
+            presentation: {
+              entityKind: 'auto',
+              owner: { kind: 'feature_pack', id: 'projects' },
+              onlyWithPoints: false,
+            },
+          },
+        ],
+      };
+  
+      await db.execute(sql`
+        insert into "dashboard_definitions" (
+          id,
+          key,
+          owner_user_id,
+          is_system,
+          name,
+          description,
+          visibility,
+          scope,
+          version,
+          definition,
+          created_at,
+          updated_at
+        ) values (
+          gen_random_uuid(),
+          ${key},
+          'system',
+          true,
+          'All Project KPIs',
+          'KPI-only dashboard that shows every project-scoped metric (with icons) summed across all projects.',
+          'public',
+          ${JSON.stringify(scope)}::jsonb,
+          0,
+          ${JSON.stringify(definition)}::jsonb,
+          ${now},
+          ${now}
+        )
+        on conflict (key) do update set
+          name = excluded.name,
+          description = excluded.description,
+          visibility = excluded.visibility,
+          scope = excluded.scope,
+          version = excluded.version,
+          definition = excluded.definition,
+          updated_at = excluded.updated_at
+      `);
     }
+  
     if (p === 'crm') {
-        const key = 'system.crm_overview';
-        const scope = { kind: 'pack', pack: 'crm' };
-        const definition = {
-            time: { mode: 'picker', default: 'last_30_days' },
-            layout: { grid: { cols: 12, rowHeight: 36, gap: 14 } },
-            widgets: [
-                {
-                    key: 'kpi.crm.prospects',
-                    kind: 'kpi',
-                    title: 'Prospects',
-                    grid: { x: 0, y: 0, w: 3, h: 2 },
-                    query: { metricKey: 'fp.crm.prospects_count', bucket: 'none', agg: 'count' },
-                    time: 'all_time',
-                    presentation: {
-                        icon: 'Building',
-                        iconColor: '#2563eb',
-                        action: { label: 'View All', href: '/crm/prospects' },
-                    },
-                },
-                {
-                    key: 'kpi.crm.contacts',
-                    kind: 'kpi',
-                    title: 'Contacts',
-                    grid: { x: 3, y: 0, w: 3, h: 2 },
-                    query: { metricKey: 'fp.crm.contacts_count', bucket: 'none', agg: 'count' },
-                    time: 'all_time',
-                    presentation: {
-                        icon: 'User',
-                        iconColor: '#16a34a',
-                        action: { label: 'View All', href: '/crm/contacts' },
-                    },
-                },
-                {
-                    key: 'kpi.crm.opportunities',
-                    kind: 'kpi',
-                    title: 'Opportunities',
-                    grid: { x: 6, y: 0, w: 3, h: 2 },
-                    query: { metricKey: 'fp.crm.opportunities_count', bucket: 'none', agg: 'count' },
-                    time: 'all_time',
-                    presentation: {
-                        icon: 'TrendingUp',
-                        iconColor: '#a855f7',
-                        action: { label: 'View All', href: '/crm/opportunities' },
-                    },
-                },
-                {
-                    key: 'kpi.crm.pipeline_total',
-                    kind: 'kpi',
-                    title: 'Pipeline Value',
-                    grid: { x: 9, y: 0, w: 3, h: 2 },
-                    query: { metricKey: 'fp.crm.pipeline_total_value_usd', bucket: 'none', agg: 'sum' },
-                    time: 'all_time',
-                    presentation: {
-                        format: 'usd',
-                        icon: 'DollarSign',
-                        iconColor: '#f59e0b',
-                    },
-                },
-                // Drillable pies (non-metrics grouped pies backed by API endpoints).
-                {
-                    key: 'pie.crm.pipeline_by_stage_count',
-                    kind: 'pie',
-                    title: 'Pipeline by Stage (Count)',
-                    grid: { x: 0, y: 2, w: 6, h: 6 },
-                    query: { metricKey: 'fp.crm.opportunities_by_stage_count', bucket: 'none', agg: 'count' },
-                    time: 'all_time',
-                    presentation: {
-                        format: 'number',
-                        groupByKey: 'stage_id',
-                        labelKey: 'stage_name',
-                        rawKey: 'stage_id',
-                        topN: 10,
-                        otherLabel: 'Other',
-                    },
-                },
-                {
-                    key: 'pie.crm.pipeline_by_stage_value',
-                    kind: 'pie',
-                    title: 'Pipeline by Stage ($)',
-                    grid: { x: 6, y: 2, w: 6, h: 6 },
-                    query: { metricKey: 'fp.crm.opportunities_by_stage_value_usd', bucket: 'none', agg: 'sum' },
-                    time: 'all_time',
-                    presentation: {
-                        format: 'usd',
-                        groupByKey: 'stage_id',
-                        labelKey: 'stage_name',
-                        rawKey: 'stage_id',
-                        topN: 10,
-                        otherLabel: 'Other',
-                    },
-                },
-                {
-                    key: 'pie.crm.likelihood_count',
-                    kind: 'pie',
-                    title: 'Opportunities by Likelihood (Count)',
-                    grid: { x: 0, y: 8, w: 6, h: 6 },
-                    query: { metricKey: 'fp.crm.opportunities_by_likelihood_count', bucket: 'none', agg: 'count' },
-                    time: 'all_time',
-                    presentation: {
-                        format: 'number',
-                        groupByKey: 'likelihood_type_id',
-                        labelKey: 'likelihood_name',
-                        rawKey: 'likelihood_type_id',
-                        topN: 10,
-                        otherLabel: 'Other',
-                    },
-                },
-                {
-                    key: 'pie.crm.likelihood_value',
-                    kind: 'pie',
-                    title: 'Opportunities by Likelihood ($)',
-                    grid: { x: 6, y: 8, w: 6, h: 6 },
-                    query: { metricKey: 'fp.crm.opportunities_by_likelihood_value_usd', bucket: 'none', agg: 'sum' },
-                    time: 'all_time',
-                    presentation: {
-                        format: 'usd',
-                        groupByKey: 'likelihood_type_id',
-                        labelKey: 'likelihood_name',
-                        rawKey: 'likelihood_type_id',
-                        topN: 10,
-                        otherLabel: 'Other',
-                    },
-                },
-            ],
-        };
-        await db.execute(sql `
-      insert into "dashboard_definitions" (
-        id,
-        key,
-        owner_user_id,
-        is_system,
-        name,
-        description,
-        visibility,
-        scope,
-        version,
-        definition,
-        created_at,
-        updated_at
-      ) values (
-        gen_random_uuid(),
-        ${key},
-        'system',
-        true,
-        'CRM Overview',
-        'Quick CRM snapshot (counts + pipeline totals).',
-        'public',
-        ${JSON.stringify(scope)}::jsonb,
-        0,
-        ${JSON.stringify(definition)}::jsonb,
-        ${now},
-        ${now}
-      )
-      on conflict (key) do update set
-        name = excluded.name,
-        description = excluded.description,
-        visibility = excluded.visibility,
-        scope = excluded.scope,
-        version = excluded.version,
-        definition = excluded.definition,
-        updated_at = excluded.updated_at
-    `);
+      const key = 'system.crm_overview';
+      const scope = { kind: 'pack', pack: 'crm' };
+      const definition = {
+        time: { mode: 'picker', default: 'last_30_days' },
+        layout: { grid: { cols: 12, rowHeight: 36, gap: 14 } },
+        widgets: [
+          {
+            key: 'kpi.crm.prospects',
+            kind: 'kpi',
+            title: 'Prospects',
+            grid: { x: 0, y: 0, w: 3, h: 2 },
+            query: { metricKey: 'fp.crm.prospects_count', bucket: 'none', agg: 'count' },
+            time: 'all_time',
+            presentation: {
+              icon: 'Building',
+              iconColor: '#2563eb',
+              action: { label: 'View All', href: '/crm/prospects' },
+            },
+          },
+          {
+            key: 'kpi.crm.contacts',
+            kind: 'kpi',
+            title: 'Contacts',
+            grid: { x: 3, y: 0, w: 3, h: 2 },
+            query: { metricKey: 'fp.crm.contacts_count', bucket: 'none', agg: 'count' },
+            time: 'all_time',
+            presentation: {
+              icon: 'User',
+              iconColor: '#16a34a',
+              action: { label: 'View All', href: '/crm/contacts' },
+            },
+          },
+          {
+            key: 'kpi.crm.opportunities',
+            kind: 'kpi',
+            title: 'Opportunities',
+            grid: { x: 6, y: 0, w: 3, h: 2 },
+            query: { metricKey: 'fp.crm.opportunities_count', bucket: 'none', agg: 'count' },
+            time: 'all_time',
+            presentation: {
+              icon: 'TrendingUp',
+              iconColor: '#a855f7',
+              action: { label: 'View All', href: '/crm/opportunities' },
+            },
+          },
+          {
+            key: 'kpi.crm.pipeline_total',
+            kind: 'kpi',
+            title: 'Pipeline Value',
+            grid: { x: 9, y: 0, w: 3, h: 2 },
+            query: { metricKey: 'fp.crm.pipeline_total_value_usd', bucket: 'none', agg: 'sum' },
+            time: 'all_time',
+            presentation: {
+              format: 'usd',
+              icon: 'DollarSign',
+              iconColor: '#f59e0b',
+            },
+          },
+          // Drillable pies (non-metrics grouped pies backed by API endpoints).
+          {
+            key: 'pie.crm.pipeline_by_stage_count',
+            kind: 'pie',
+            title: 'Pipeline by Stage (Count)',
+            grid: { x: 0, y: 2, w: 6, h: 6 },
+            query: { metricKey: 'fp.crm.opportunities_by_stage_count', bucket: 'none', agg: 'count' },
+            time: 'all_time',
+            presentation: {
+              format: 'number',
+              groupByKey: 'stage_id',
+              labelKey: 'stage_name',
+              rawKey: 'stage_id',
+              topN: 10,
+              otherLabel: 'Other',
+            },
+          },
+          {
+            key: 'pie.crm.pipeline_by_stage_value',
+            kind: 'pie',
+            title: 'Pipeline by Stage ($)',
+            grid: { x: 6, y: 2, w: 6, h: 6 },
+            query: { metricKey: 'fp.crm.opportunities_by_stage_value_usd', bucket: 'none', agg: 'sum' },
+            time: 'all_time',
+            presentation: {
+              format: 'usd',
+              groupByKey: 'stage_id',
+              labelKey: 'stage_name',
+              rawKey: 'stage_id',
+              topN: 10,
+              otherLabel: 'Other',
+            },
+          },
+          {
+            key: 'pie.crm.likelihood_count',
+            kind: 'pie',
+            title: 'Opportunities by Likelihood (Count)',
+            grid: { x: 0, y: 8, w: 6, h: 6 },
+            query: { metricKey: 'fp.crm.opportunities_by_likelihood_count', bucket: 'none', agg: 'count' },
+            time: 'all_time',
+            presentation: {
+              format: 'number',
+              groupByKey: 'likelihood_type_id',
+              labelKey: 'likelihood_name',
+              rawKey: 'likelihood_type_id',
+              topN: 10,
+              otherLabel: 'Other',
+            },
+          },
+          {
+            key: 'pie.crm.likelihood_value',
+            kind: 'pie',
+            title: 'Opportunities by Likelihood ($)',
+            grid: { x: 6, y: 8, w: 6, h: 6 },
+            query: { metricKey: 'fp.crm.opportunities_by_likelihood_value_usd', bucket: 'none', agg: 'sum' },
+            time: 'all_time',
+            presentation: {
+              format: 'usd',
+              groupByKey: 'likelihood_type_id',
+              labelKey: 'likelihood_name',
+              rawKey: 'likelihood_type_id',
+              topN: 10,
+              otherLabel: 'Other',
+            },
+          },
+        ],
+      };
+  
+      await db.execute(sql`
+        insert into "dashboard_definitions" (
+          id,
+          key,
+          owner_user_id,
+          is_system,
+          name,
+          description,
+          visibility,
+          scope,
+          version,
+          definition,
+          created_at,
+          updated_at
+        ) values (
+          gen_random_uuid(),
+          ${key},
+          'system',
+          true,
+          'CRM Overview',
+          'Quick CRM snapshot (counts + pipeline totals).',
+          'public',
+          ${JSON.stringify(scope)}::jsonb,
+          0,
+          ${JSON.stringify(definition)}::jsonb,
+          ${now},
+          ${now}
+        )
+        on conflict (key) do update set
+          name = excluded.name,
+          description = excluded.description,
+          visibility = excluded.visibility,
+          scope = excluded.scope,
+          version = excluded.version,
+          definition = excluded.definition,
+          updated_at = excluded.updated_at
+      `);
     }
+    */
 }
 function slugify(s) {
     const x = String(s || '')
@@ -592,6 +645,22 @@ export async function POST(request) {
         limit 1
       `);
             source = (res.rows || [])[0] || null;
+            if (!source) {
+                const staticSource = getStaticDashboardByKey(sourceKey);
+                if (staticSource) {
+                    source = {
+                        key: staticSource.key,
+                        name: staticSource.name,
+                        description: staticSource.description,
+                        ownerUserId: staticSource.ownerUserId,
+                        isSystem: staticSource.isSystem,
+                        visibility: staticSource.visibility,
+                        scope: staticSource.scope,
+                        version: staticSource.version,
+                        definition: staticSource.definition,
+                    };
+                }
+            }
             if (!source)
                 return NextResponse.json({ error: 'sourceKey not found' }, { status: 404 });
             // If source is private, only owner can copy (or admin).
