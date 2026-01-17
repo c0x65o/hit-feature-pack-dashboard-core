@@ -49,12 +49,9 @@ export async function GET(request: NextRequest) {
     if (mode === 'none') {
       // Explicit deny: return empty results (fail-closed but non-breaking for list UI)
       scopeModeFilter = sql<boolean>`false`;
-    } else if (mode === 'own') {
-      // Only show dashboards owned by the current user
-      scopeModeFilter = sql`d.owner_user_id = ${user.sub}`;
-    } else if (mode === 'ldd') {
-      // Dashboards don't have LDD fields, so ldd mode behaves the same as own
-      scopeModeFilter = sql`d.owner_user_id = ${user.sub}`;
+    } else if (mode === 'own' || mode === 'ldd') {
+      // Own scope also allows system dashboards so pack defaults are visible.
+      scopeModeFilter = sql`(d.owner_user_id = ${user.sub} or d.is_system = true)`;
     } else if (mode === 'any') {
       // Show all dashboards (respecting visibility and shares)
       scopeModeFilter = sql<boolean>`true`;

@@ -106,13 +106,13 @@ export async function GET(request, { params }) {
             return NextResponse.json({ error: 'Access denied' }, { status: 403 });
         }
         else if (mode === 'own') {
-            if (row.ownerUserId !== user.sub) {
+            if (row.ownerUserId !== user.sub && !row.isSystem) {
                 return NextResponse.json({ error: 'Access denied' }, { status: 403 });
             }
         }
         else if (mode === 'ldd') {
             // Dashboards don't have LDD fields, so ldd mode behaves the same as own
-            if (row.ownerUserId !== user.sub) {
+            if (row.ownerUserId !== user.sub && !row.isSystem) {
                 return NextResponse.json({ error: 'Access denied' }, { status: 403 });
             }
         }

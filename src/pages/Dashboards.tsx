@@ -2628,27 +2628,10 @@ export function Dashboards(props: DashboardsProps = {}) {
                   : `No dashboards exist yet for default packs (${defaultPacks.join(', ')}).`
               }
             >
-              <div style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
-                <div style={{ fontSize: 13, color: colors.text.muted }}>
-                  Create dashboard is coming soon. In the meantime, press <strong>Ctrl+K</strong> (or <strong>⌘K</strong>) to open the AI assistant and tell it what you want your dashboard to look like.
-                </div>
-                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-                  <Button
-                    onClick={() => {
-                      // There is no dashboard builder UI yet; guide users into the AI overlay.
-                      try {
-                        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true }));
-                      } catch {
-                        // ignore
-                      }
-                    }}
-                  >
-                    Ask AI to create a dashboard
-                  </Button>
-                  <Button variant="secondary" onClick={loadList}>
-                    Refresh
-                  </Button>
-                </div>
+              <div style={{ padding: 14, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                <Button variant="secondary" onClick={loadList}>
+                  Refresh
+                </Button>
               </div>
             </Card>
           </div>
@@ -2658,11 +2641,6 @@ export function Dashboards(props: DashboardsProps = {}) {
           <div style={{ minWidth: 260 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
               <strong>{definition?.name || 'Dashboard'}</strong>
-              {pack ? (
-                <Badge variant="info">pack: {pack}</Badge>
-              ) : (
-                <Badge variant="info">packs: {defaultPacks.join(', ')}</Badge>
-              )}
               {/* Ownership/sharing badge */}
               {definition?.isOwner ? (
                 <Badge variant="success">yours</Badge>
@@ -3395,17 +3373,15 @@ export function Dashboards(props: DashboardsProps = {}) {
               <AclPicker
                 config={{
                   mode: 'granular',
-                  // Cast to any: LDD principal types (locations/divisions/departments) not yet in @hit/ui-kit types
-                  principals: (isLddSharingEnabled()
+                  principals: isLddSharingEnabled()
                     ? { users: true, groups: true, roles: true, locations: true, divisions: true, departments: true }
-                    : { users: true, groups: true, roles: true }) as any,
+                    : { users: true, groups: true, roles: true },
                   granularPermissions: [{ key: 'READ', label: 'Read' }],
                 }}
                 disabled={!definition}
                 loading={sharesLoading}
                 error={sharesError}
                 fetchPrincipals={createFetchPrincipals({ isAdmin: true })}
-                // Cast to any: LDD principal types not yet in @hit/ui-kit AclEntry type
                 entries={(isLddSharingEnabled()
                   ? shares
                   : shares.filter((s) => s.principalType === 'user' || s.principalType === 'group' || s.principalType === 'role')
@@ -3414,8 +3390,8 @@ export function Dashboards(props: DashboardsProps = {}) {
                   principalType: s.principalType,
                   principalId: s.principalId,
                   permissions: ['READ'],
-                })) as any}
-                onAdd={async (entry: any) => {
+                }))}
+                onAdd={async (entry: Omit<AclEntry, 'id'>) => {
                   if (!definition) return;
                   const res = await fetchWithAuth(`/api/dashboard-definitions/${encodeURIComponent(definition.key)}/shares`, {
                     method: 'POST',
@@ -3426,7 +3402,7 @@ export function Dashboards(props: DashboardsProps = {}) {
                   if (!res.ok) throw new Error(json?.error || `Failed (${res.status})`);
                   setShares((prev) => [...prev, json.data]);
                 }}
-                onRemove={async (entry: any) => {
+                onRemove={async (entry: AclEntry) => {
                   if (!definition) return;
                   const qs = `principalType=${encodeURIComponent(entry.principalType)}&principalId=${encodeURIComponent(entry.principalId)}`;
                   const res = await fetchWithAuth(`/api/dashboard-definitions/${encodeURIComponent(definition.key)}/shares?${qs}`, { method: 'DELETE' });

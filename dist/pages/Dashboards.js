@@ -2214,15 +2214,7 @@ export function Dashboards(props = {}) {
         .legend-pill { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 999px; border: 1px solid rgba(148,163,184,0.14); background: rgba(148,163,184,0.08); font-size: 12px; }
       ` }), _jsxs("div", { className: "wrap", children: [!loadingList && list.length === 0 ? (_jsx("div", { className: "span-12", children: _jsx(Card, { title: "No dashboards yet", description: pack
                                 ? `No dashboards exist for pack "${pack}" yet.`
-                                : `No dashboards exist yet for default packs (${defaultPacks.join(', ')}).`, children: _jsxs("div", { style: { padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }, children: [_jsxs("div", { style: { fontSize: 13, color: colors.text.muted }, children: ["Create dashboard is coming soon. In the meantime, press ", _jsx("strong", { children: "Ctrl+K" }), " (or ", _jsx("strong", { children: "\u2318K" }), ") to open the AI assistant and tell it what you want your dashboard to look like."] }), _jsxs("div", { style: { display: 'flex', gap: 10, flexWrap: 'wrap' }, children: [_jsx(Button, { onClick: () => {
-                                                    // There is no dashboard builder UI yet; guide users into the AI overlay.
-                                                    try {
-                                                        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true }));
-                                                    }
-                                                    catch {
-                                                        // ignore
-                                                    }
-                                                }, children: "Ask AI to create a dashboard" }), _jsx(Button, { variant: "secondary", onClick: loadList, children: "Refresh" })] })] }) }) })) : null, _jsxs("div", { className: "topbar", children: [_jsx("div", { style: { minWidth: 260 }, children: _jsxs("div", { style: { display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }, children: [_jsx("strong", { children: definition?.name || 'Dashboard' }), pack ? (_jsxs(Badge, { variant: "info", children: ["pack: ", pack] })) : (_jsxs(Badge, { variant: "info", children: ["packs: ", defaultPacks.join(', ')] })), definition?.isOwner ? (_jsx(Badge, { variant: "success", children: "yours" })) : definition?.isShared ? (_jsx(Badge, { variant: "warning", children: "shared" })) : definition?.visibility === 'public' ? (_jsx(Badge, { variant: "default", children: "public" })) : null] }) }), _jsxs("div", { className: "controls", children: [list.length > 0 ? (_jsx(Dropdown, { align: "right", trigger: _jsx(Button, { variant: "secondary", children: "Switch" }), items: list.map((d) => {
+                                : `No dashboards exist yet for default packs (${defaultPacks.join(', ')}).`, children: _jsx("div", { style: { padding: 14, display: 'flex', gap: 10, flexWrap: 'wrap' }, children: _jsx(Button, { variant: "secondary", onClick: loadList, children: "Refresh" }) }) }) })) : null, _jsxs("div", { className: "topbar", children: [_jsx("div", { style: { minWidth: 260 }, children: _jsxs("div", { style: { display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }, children: [_jsx("strong", { children: definition?.name || 'Dashboard' }), definition?.isOwner ? (_jsx(Badge, { variant: "success", children: "yours" })) : definition?.isShared ? (_jsx(Badge, { variant: "warning", children: "shared" })) : definition?.visibility === 'public' ? (_jsx(Badge, { variant: "default", children: "public" })) : null] }) }), _jsxs("div", { className: "controls", children: [list.length > 0 ? (_jsx(Dropdown, { align: "right", trigger: _jsx(Button, { variant: "secondary", children: "Switch" }), items: list.map((d) => {
                                             const suffix = d.isOwner ? ' (yours)' : d.isShared ? ' (shared)' : d.visibility === 'public' ? ' (public)' : '';
                                             const current = d.key === selectedKey ? ' ✓' : '';
                                             const packPrefix = isDefaultPackMode ? `[${String(d.pack || 'pack').toUpperCase()}] ` : '';
@@ -2622,14 +2614,11 @@ export function Dashboards(props = {}) {
                                 return (_jsx("div", { className: spanClass, children: _jsx(Card, { title: w.title || w.kind, children: _jsxs("div", { style: { padding: 14, opacity: 0.75, fontSize: 12 }, children: ["Unsupported widget kind: ", String(w.kind)] }) }) }, w.key));
                             })) : null] }), _jsx(Modal, { open: shareOpen, onClose: () => setShareOpen(false), title: "Share dashboard", description: definition ? `ACL for ${definition.name}` : '', children: _jsxs("div", { style: { padding: 12 }, children: [sharesError ? _jsx("div", { style: { color: '#ef4444', fontSize: 13, marginBottom: 10 }, children: sharesError }) : null, sharesLoading ? _jsx(Spinner, {}) : (_jsx(AclPicker, { config: {
                                         mode: 'granular',
-                                        // Cast to any: LDD principal types (locations/divisions/departments) not yet in @hit/ui-kit types
-                                        principals: (isLddSharingEnabled()
+                                        principals: isLddSharingEnabled()
                                             ? { users: true, groups: true, roles: true, locations: true, divisions: true, departments: true }
-                                            : { users: true, groups: true, roles: true }),
+                                            : { users: true, groups: true, roles: true },
                                         granularPermissions: [{ key: 'READ', label: 'Read' }],
-                                    }, disabled: !definition, loading: sharesLoading, error: sharesError, fetchPrincipals: createFetchPrincipals({ isAdmin: true }), 
-                                    // Cast to any: LDD principal types not yet in @hit/ui-kit AclEntry type
-                                    entries: (isLddSharingEnabled()
+                                    }, disabled: !definition, loading: sharesLoading, error: sharesError, fetchPrincipals: createFetchPrincipals({ isAdmin: true }), entries: (isLddSharingEnabled()
                                         ? shares
                                         : shares.filter((s) => s.principalType === 'user' || s.principalType === 'group' || s.principalType === 'role')).map((s) => ({
                                         id: s.id,
