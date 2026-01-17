@@ -1,6 +1,6 @@
 interface DashboardsProps {
     onNavigate?: (path: string) => void;
-    /** Optional pack name - if provided, overrides URL query param */
+    /** Optional pack name (typically from route params) */
     pack?: string;
     /** Optional initial dashboard key to select */
     dashboardKey?: string;

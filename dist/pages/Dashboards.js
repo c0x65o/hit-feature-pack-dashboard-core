@@ -590,16 +590,16 @@ export function Dashboards(props = {}) {
     const { colors, radius } = useThemeTokens();
     const searchParams = useSearchParams();
     const searchParamsString = searchParams?.toString() || '';
-    // Use prop if provided, otherwise fall back to URL query param.
-    // NOTE: This MUST be declared before any hooks that reference `pack` in dependency arrays.
-    const pack = React.useMemo(() => {
-        if (packProp)
-            return packProp.trim();
-        return (searchParams?.get('pack') || '').trim();
-    }, [packProp, searchParams]);
+    // Use prop when present; we no longer read pack from the query string.
+    const pack = React.useMemo(() => (packProp ? packProp.trim() : ''), [packProp]);
     const defaultPacks = React.useMemo(() => ['crm', 'projects', 'marketing'], []);
     const isDefaultPackMode = !pack;
-    const urlKey = React.useMemo(() => (searchParams?.get('key') || '').trim(), [searchParamsString]);
+    const urlKey = React.useMemo(() => {
+        const direct = searchParams?.get('key');
+        if (direct)
+            return direct.trim();
+        return (searchParams?.get('dashboardKey') || '').trim();
+    }, [searchParamsString]);
     const navigate = React.useCallback((href) => {
         if (!href)
             return;

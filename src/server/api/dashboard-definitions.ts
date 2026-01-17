@@ -7,7 +7,8 @@ import crypto from 'node:crypto';
 import { resolveUserOrgScope, resolveUserPrincipals } from '@hit/feature-pack-auth-core/server/lib/acl-utils';
 import { resolveDashboardCoreScopeMode } from '../lib/scope-mode';
 import { requireDashboardCoreAction } from '../lib/require-action';
-import { getStaticDashboardByKey, getStaticDashboardsForPack } from '../lib/static-dashboards';
+import fs from 'node:fs';
+import path from 'node:path';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -36,6 +37,9 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const pack = (searchParams.get('pack') || '').trim();
     const includeGlobal = (searchParams.get('includeGlobal') || 'true').toLowerCase() !== 'false';
+
+    // Ensure system dashboards exist from generated templates.
+    await ensureDefaultPackDashboards(db, pack);
 
     // Resolve scope mode for read access
     const mode = await resolveDashboardCoreScopeMode(request, { entity: 'dashboards', verb: 'read' });
@@ -165,54 +169,7 @@ export async function GET(request: NextRequest) {
         case when d.scope->>'kind' = 'global' then 0 else 1 end,
         d.name asc
     `);
-    const dbRows = ((rows as any).rows || []) as any[];
-
-    const canReadStatic = (d: any) => {
-      if (mode === 'none') return false;
-      if (mode === 'own' || mode === 'ldd') return d.ownerUserId === user.sub;
-      if (mode === 'any') return d.visibility === 'public' || d.ownerUserId === user.sub;
-      return d.ownerUserId === user.sub;
-    };
-
-    const staticDashboards = getStaticDashboardsForPack(pack, includeGlobal)
-      .filter(canReadStatic)
-      .map((d) => ({
-        id: d.id,
-        key: d.key,
-        name: d.name,
-        description: d.description,
-        ownerUserId: d.ownerUserId,
-        isSystem: d.isSystem,
-        visibility: d.visibility,
-        scope: d.scope,
-        version: d.version,
-        updatedAt: d.updatedAt,
-        shareCount: 0,
-        isOwner: d.ownerUserId === user.sub,
-        isShared: false,
-        canEdit: false,
-        _static: true,
-      }));
-
-    const staticKeys = new Set(staticDashboards.map((d) => String(d.key || '')));
-    const merged = [
-      ...staticDashboards,
-      ...dbRows.filter((r) => !staticKeys.has(String(r?.key || ''))),
-    ];
-
-    const scopeRank = (d: any) => (d?.scope?.kind === 'global' ? 0 : 1);
-    merged.sort((a, b) => {
-      const aRank = scopeRank(a);
-      const bRank = scopeRank(b);
-      if (aRank !== bRank) return aRank - bRank;
-      const nameCmp = String(a?.name || '').localeCompare(String(b?.name || ''), undefined, {
-        sensitivity: 'base',
-      });
-      if (nameCmp !== 0) return nameCmp;
-      return String(a?.key || '').localeCompare(String(b?.key || ''));
-    });
-
-    return NextResponse.json({ data: merged });
+    return NextResponse.json({ data: (rows as any).rows || [] });
   } catch (error: any) {
     console.error('Failed to list dashboard definitions:', error);
     return NextResponse.json({ error: error?.message || 'Failed to list dashboards' }, { status: 500 });
@@ -220,9 +177,6 @@ export async function GET(request: NextRequest) {
 }
 
 async function ensureDefaultPackDashboards(db: any, pack: string) {
-  // Deprecated: static dashboards are merged at read time.
-  return;
-  /*
   const requestedPack = String(pack || '').trim();
 
   // Prefer pack-owned templates compiled by `hit run` into `.hit/generated/dashboard-templates.json`.
@@ -545,7 +499,6 @@ async function ensureDefaultPackDashboards(db: any, pack: string) {
         updated_at = excluded.updated_at
     `);
   }
-  */
 }
 
 function slugify(s: string): string {
@@ -656,22 +609,6 @@ export async function POST(request: NextRequest) {
         limit 1
       `);
       source = ((res as any).rows || [])[0] || null;
-      if (!source) {
-        const staticSource = getStaticDashboardByKey(sourceKey);
-        if (staticSource) {
-          source = {
-            key: staticSource.key,
-            name: staticSource.name,
-            description: staticSource.description,
-            ownerUserId: staticSource.ownerUserId,
-            isSystem: staticSource.isSystem,
-            visibility: staticSource.visibility,
-            scope: staticSource.scope,
-            version: staticSource.version,
-            definition: staticSource.definition,
-          };
-        }
-      }
       if (!source) return NextResponse.json({ error: 'sourceKey not found' }, { status: 404 });
       // If source is private, only owner can copy (or admin).
       const isAdmin =

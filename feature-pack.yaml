@@ -39,6 +39,11 @@ routes:
     roles: []
     default_roles_allow: [user]
     authz: { entity: dashboards, verb: read }
+  - path: /dashboards/[pack]
+    page: Dashboards
+    roles: []
+    default_roles_allow: [user]
+    authz: { entity: dashboards, verb: read }
 
 nav: []
 
