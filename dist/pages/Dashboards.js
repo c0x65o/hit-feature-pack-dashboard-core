@@ -2613,6 +2613,67 @@ export function Dashboards(props = {}) {
                                 openRouteDrill({ href: String(action.href), title: String(action.label) });
                             }, children: String(action.label) })) : (_jsx("span", { className: "kpi-action kpi-action--placeholder", "aria-hidden": "true", children: "\u00A0" }))] }) }) }, w.key));
     };
+    // Helper to build pointFilter from gauge query
+    const buildGaugePointFilter = (query, t) => {
+        const q = query || {};
+        const metricKey = String(q.metricKey || '').trim();
+        if (!metricKey)
+            return null;
+        const pf = { metricKey };
+        if (q.entityKind)
+            pf.entityKind = q.entityKind;
+        if (q.entityId)
+            pf.entityId = q.entityId;
+        if (Array.isArray(q.entityIds))
+            pf.entityIds = q.entityIds;
+        if (q.dataSourceId)
+            pf.dataSourceId = q.dataSourceId;
+        if (q.params && typeof q.params === 'object')
+            pf.params = q.params;
+        if (t) {
+            pf.start = t.start;
+            pf.end = t.end;
+        }
+        return pf;
+    };
+    const handleGaugeDrilldown = (w, fmt) => {
+        const pres = w?.presentation || {};
+        const t = effectiveTime(w);
+        const valueLabel = String(pres?.valueLabel || 'Value');
+        const maxLabel = String(pres?.maxLabel || 'Max');
+        const valueFormat = (pres?.valueFormat || pres?.format || fmt);
+        const maxFormat = (pres?.maxFormat || pres?.format || fmt);
+        const options = [];
+        // Value metric drill option
+        const valuePf = buildGaugePointFilter(w?.query, t);
+        if (valuePf) {
+            options.push({
+                label: `${valueLabel} (${String(w?.query?.metricKey || 'metric')})`,
+                d: { kind: 'pointFilter', pointFilter: valuePf, title: `${w.title || 'Gauge'} — ${valueLabel}`, format: valueFormat },
+            });
+        }
+        // Max metric drill option (if maxQuery exists)
+        const maxQuery = pres?.maxQuery;
+        if (maxQuery && typeof maxQuery === 'object') {
+            const maxPf = buildGaugePointFilter(maxQuery, t);
+            if (maxPf) {
+                options.push({
+                    label: `${maxLabel} (${String(maxQuery?.metricKey || 'metric')})`,
+                    d: { kind: 'pointFilter', pointFilter: maxPf, title: `${w.title || 'Gauge'} — ${maxLabel}`, format: maxFormat },
+                });
+            }
+        }
+        if (options.length === 0)
+            return;
+        if (options.length === 1) {
+            // Single option, drill directly
+            runDrillDescriptor(options[0].d);
+        }
+        else {
+            // Multiple options, show menu
+            openDrillMenu({ title: w.title || 'Gauge', format: valueFormat, options });
+        }
+    };
     const renderGaugeWidget = (w, ctx) => {
         const { spanClass, fmt } = ctx;
         const st = gaugeValues[w.key];
@@ -2632,7 +2693,11 @@ export function Dashboards(props = {}) {
         const valueLabel = String(pres?.valueLabel || 'Value');
         const maxLabel = String(pres?.maxLabel || 'Max');
         const showValues = pres?.showValues !== false;
-        return (_jsx("div", { className: spanClass, children: _jsx(Card, { children: _jsxs("div", { className: "gauge", children: [_jsx("div", { className: "gauge-track", style: {
+        const canDrill = Boolean(w?.query?.metricKey);
+        return (_jsx("div", { className: spanClass, children: _jsx(Card, { children: _jsxs("div", { className: "gauge", style: { cursor: canDrill ? 'pointer' : 'default' }, onClick: () => canDrill && !loading && handleGaugeDrilldown(w, fmt), role: canDrill ? 'button' : undefined, tabIndex: canDrill ? 0 : undefined, onKeyDown: canDrill ? (e) => { if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        handleGaugeDrilldown(w, fmt);
+                    } } : undefined, children: [_jsx("div", { className: "gauge-track", style: {
                                 border: `1px solid ${colors.border.subtle}`,
                                 background: colors.bg.muted,
                             }, children: _jsx("div", { className: "gauge-fill", style: {
@@ -2661,15 +2726,19 @@ export function Dashboards(props = {}) {
         const valueLabel = String(pres?.valueLabel || 'Value');
         const maxLabel = String(pres?.maxLabel || 'Max');
         const showValues = pres?.showValues !== false;
-        const r = 70;
+        const canDrill = Boolean(w?.query?.metricKey);
+        const r = 60;
         const cx = 100;
-        const cy = 90;
-        // Arc opens upward: from left (cx-r, cy) to right (cx+r, cy) going through top (cx, cy-r)
-        // sweep-flag=0 (counterclockwise in SVG) draws the upper arc that curves upward
-        const arcPath = `M ${cx - r} ${cy} A ${r} ${r} 0 0 0 ${cx + r} ${cy}`;
+        const cy = 70;
+        // Arc opens upward: from left (cx-r, cy) to right (cx+r, cy) curving through top (cx, cy-r)
+        // sweep-flag=1 (clockwise in SVG screen coords) draws the upper arc that curves upward
+        const arcPath = `M ${cx - r} ${cy} A ${r} ${r} 0 0 1 ${cx + r} ${cy}`;
         const arcLength = Math.PI * r;
         const dash = `${fillPct * arcLength} ${arcLength}`;
-        return (_jsx("div", { className: spanClass, children: _jsx(Card, { children: _jsxs("div", { className: "semi-gauge", children: [_jsxs("svg", { viewBox: "0 0 200 100", className: "semi-gauge-svg", "aria-hidden": "true", children: [_jsx("path", { d: arcPath, fill: "none", stroke: colors.border.subtle, strokeWidth: 14, strokeLinecap: "round" }), _jsx("path", { d: arcPath, fill: "none", stroke: gaugeColor, strokeWidth: 14, strokeLinecap: "round", strokeDasharray: dash })] }), _jsxs("div", { className: "semi-gauge-content", children: [_jsx("div", { className: "semi-gauge-title", children: w.title || 'Gauge' }), _jsx("div", { className: "semi-gauge-value", children: loading ? '—' : pctLabel }), showValues ? (_jsx("div", { className: "semi-gauge-sub", children: loading
+        return (_jsx("div", { className: spanClass, children: _jsx(Card, { children: _jsxs("div", { className: "semi-gauge", style: { cursor: canDrill ? 'pointer' : 'default' }, onClick: () => canDrill && !loading && handleGaugeDrilldown(w, fmt), role: canDrill ? 'button' : undefined, tabIndex: canDrill ? 0 : undefined, onKeyDown: canDrill ? (e) => { if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        handleGaugeDrilldown(w, fmt);
+                    } } : undefined, children: [_jsxs("svg", { viewBox: "0 0 200 80", className: "semi-gauge-svg", "aria-hidden": "true", children: [_jsx("path", { d: arcPath, fill: "none", stroke: colors.border.subtle, strokeWidth: 14, strokeLinecap: "round" }), _jsx("path", { d: arcPath, fill: "none", stroke: gaugeColor, strokeWidth: 14, strokeLinecap: "round", strokeDasharray: dash })] }), _jsxs("div", { className: "semi-gauge-content", children: [_jsx("div", { className: "semi-gauge-title", children: w.title || 'Gauge' }), _jsx("div", { className: "semi-gauge-value", children: loading ? '—' : pctLabel }), showValues ? (_jsx("div", { className: "semi-gauge-sub", children: loading
                                         ? 'Loading...'
                                         : `${valueLabel}: ${formatNumber(value, valueFormat)} · ${maxLabel}: ${formatNumber(max, maxFormat)}` })) : null] })] }) }) }, w.key));
     };
@@ -2906,7 +2975,7 @@ export function Dashboards(props = {}) {
         .gauge-value { font-size: 26px; font-weight: 800; letter-spacing: -0.02em; }
         .gauge-sub { font-size: 12px; opacity: 0.75; }
         .semi-gauge { padding: 14px; display: flex; flex-direction: column; align-items: center; gap: 4px; }
-        .semi-gauge-svg { width: 100%; max-width: 180px; height: auto; aspect-ratio: 2 / 1; margin: 0 auto; display: block; overflow: visible; }
+        .semi-gauge-svg { width: 100%; max-width: 160px; height: auto; aspect-ratio: 5 / 2; margin: 0 auto; display: block; overflow: visible; }
         .semi-gauge-content { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 4px; }
         .semi-gauge-title { font-size: 12px; opacity: 0.75; }
         .semi-gauge-value { font-size: 26px; font-weight: 800; letter-spacing: -0.02em; }
