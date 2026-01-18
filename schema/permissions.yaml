@@ -66,3 +66,21 @@ permissions:
       label: Create Dashboard
       description: "Create a new dashboard definition."
       default_enabled: false
+
+    # Sharing permissions (dashboards)
+    - key: dashboard-core.dashboards.share.user
+      label: "Dashboard Dashboards Share Users"
+      description: "Allow sharing dashboards with individual users."
+      default_enabled: false
+    - key: dashboard-core.dashboards.share.group
+      label: "Dashboard Dashboards Share Groups"
+      description: "Allow sharing dashboards with groups."
+      default_enabled: false
+    - key: dashboard-core.dashboards.share.ldd
+      label: "Dashboard Dashboards Share LDD"
+      description: "Allow sharing dashboards with locations, divisions, or departments."
+      default_enabled: false
+    - key: dashboard-core.dashboards.scope.share_outside
+      label: "Dashboard Dashboards LDD Share Outside"
+      description: "Allow sharing dashboards to users or LDD outside your org scope."
+      default_enabled: false

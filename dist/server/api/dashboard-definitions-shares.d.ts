@@ -17,7 +17,7 @@ export declare function POST(request: NextRequest, { params }: {
     params: {
         key: string;
     };
-}): Promise<NextResponse<unknown>>;
+}): Promise<Response>;
 /**
  * DELETE: remove share entry
  * Query params: ?principalType=user&principalId=...

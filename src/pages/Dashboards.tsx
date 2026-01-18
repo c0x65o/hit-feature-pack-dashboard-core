@@ -181,6 +181,42 @@ function isLddSharingEnabled(): boolean {
   }
 }
 
+function useActionPermission(actionKey: string | null): { allowed: boolean; loading: boolean } {
+  const [allowed, setAllowed] = React.useState(false);
+  const [loading, setLoading] = React.useState(Boolean(actionKey));
+
+  React.useEffect(() => {
+    let active = true;
+    if (!actionKey) {
+      setAllowed(false);
+      setLoading(false);
+      return () => {};
+    }
+
+    setLoading(true);
+    fetchWithAuth(`/api/auth/permissions/actions/check/${encodeURIComponent(actionKey)}`)
+      .then(async (res) => {
+        const json = await res.json().catch(() => ({}));
+        if (!active) return;
+        setAllowed(Boolean((json as any)?.ok));
+      })
+      .catch(() => {
+        if (!active) return;
+        setAllowed(false);
+      })
+      .finally(() => {
+        if (!active) return;
+        setLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [actionKey]);
+
+  return { allowed, loading };
+}
+
 type TimePreset =
   | 'last_7_days'
   | 'last_30_days'
@@ -1005,6 +1041,40 @@ export function Dashboards(props: DashboardsProps = {}) {
   const { colors, radius } = useSafeThemeTokens();
   const searchParams = useSearchParams();
   const searchParamsString = searchParams?.toString() || '';
+
+  const { allowed: canShareUser } = useActionPermission('dashboard-core.dashboards.share.user');
+  const { allowed: canShareGroup } = useActionPermission('dashboard-core.dashboards.share.group');
+  const { allowed: canShareLdd } = useActionPermission('dashboard-core.dashboards.share.ldd');
+  const { allowed: canShareOutside } = useActionPermission('dashboard-core.dashboards.scope.share_outside');
+  const shareLddEnabled = isLddSharingEnabled() && canShareLdd;
+
+  const sharePrincipalsConfig = React.useMemo<AclPickerConfig['principals']>(
+    () =>
+      shareLddEnabled
+        ? {
+            users: canShareUser,
+            groups: canShareGroup,
+            roles: canShareGroup,
+            locations: { enabled: canShareLdd, label: 'Location' },
+            divisions: { enabled: canShareLdd, label: 'Division' },
+            departments: { enabled: canShareLdd, label: 'Department' },
+          }
+        : {
+            users: canShareUser,
+            groups: canShareGroup,
+            roles: canShareGroup,
+          },
+    [canShareGroup, canShareLdd, canShareUser, shareLddEnabled]
+  );
+
+  const shareFetchPrincipals = React.useMemo(
+    () => createFetchPrincipals({
+      isAdmin: false,
+      userScope: canShareOutside ? 'all' : 'ldd',
+      groupsEnabled: canShareGroup,
+    }),
+    [canShareGroup, canShareOutside]
+  );
 
   // Use prop when present; we no longer read pack from the query string.
   const pack = React.useMemo(() => (packProp ? packProp.trim() : ''), [packProp]);
@@ -3921,16 +3991,14 @@ export function Dashboards(props: DashboardsProps = {}) {
               <AclPicker
                 config={{
                   mode: 'granular',
-                  principals: isLddSharingEnabled()
-                    ? { users: true, groups: true, roles: true, locations: true, divisions: true, departments: true }
-                    : { users: true, groups: true, roles: true },
+                  principals: sharePrincipalsConfig,
                   granularPermissions: [{ key: 'READ', label: 'Read' }],
                 }}
                 disabled={!definition}
                 loading={sharesLoading}
                 error={sharesError}
-                fetchPrincipals={createFetchPrincipals({ isAdmin: true })}
-                entries={(isLddSharingEnabled()
+                fetchPrincipals={shareFetchPrincipals}
+                entries={(shareLddEnabled
                   ? shares
                   : shares.filter((s) => s.principalType === 'user' || s.principalType === 'group' || s.principalType === 'role')
                 ).map((s) => ({

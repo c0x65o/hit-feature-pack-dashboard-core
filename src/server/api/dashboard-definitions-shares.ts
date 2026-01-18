@@ -2,11 +2,84 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { sql } from 'drizzle-orm';
-import { extractUserFromRequest, requirePageAccess } from '../auth';
+import { requirePageAccess } from '../auth';
 import { resolveDashboardCoreScopeMode } from '../lib/scope-mode';
+import { requireDashboardCoreAction } from '../lib/require-action';
+import { resolveUserOrgScope } from '@hit/feature-pack-auth-core/server/lib/acl-utils';
+import { isLddIdInOrgScope, isUserInOrgScope, type LddPrincipalType } from '@hit/feature-pack-auth-core/server/lib/ldd-scoping';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
+
+type ShareType = 'user' | 'group' | 'ldd';
+
+function isLddPrincipalType(value: string): value is LddPrincipalType {
+  return value === 'location' || value === 'division' || value === 'department';
+}
+
+function resolveShareType(principalType: string): ShareType | null {
+  if (principalType === 'user') return 'user';
+  if (principalType === 'group' || principalType === 'role') return 'group';
+  if (isLddPrincipalType(principalType)) return 'ldd';
+  return null;
+}
+
+async function enforceSharePermissions(args: {
+  request: NextRequest;
+  user: { sub: string };
+  principalType: string;
+  principalId: string;
+}): Promise<Response | null> {
+  const { request, user, principalType, principalId } = args;
+  const shareType = resolveShareType(principalType);
+  if (!shareType) {
+    return NextResponse.json(
+      { error: 'principalType must be user, group, role, location, division, or department' },
+      { status: 400 }
+    );
+  }
+
+  const shareActionKey =
+    shareType === 'user'
+      ? 'dashboard-core.dashboards.share.user'
+      : shareType === 'group'
+        ? 'dashboard-core.dashboards.share.group'
+        : 'dashboard-core.dashboards.share.ldd';
+
+  const shareDenied = await requireDashboardCoreAction(request, shareActionKey);
+  if (shareDenied) return shareDenied;
+
+  const shareOutsideKey = 'dashboard-core.dashboards.scope.share_outside';
+
+  // Groups/roles have no LDD mapping, treat as outside.
+  if (shareType === 'group') {
+    const outsideDenied = await requireDashboardCoreAction(request, shareOutsideKey);
+    if (outsideDenied) return outsideDenied;
+    return null;
+  }
+
+  const orgScope = await resolveUserOrgScope({ request, user });
+
+  if (shareType === 'user') {
+    const inScope = await isUserInOrgScope({ userKey: principalId, orgScope });
+    if (!inScope) {
+      const outsideDenied = await requireDashboardCoreAction(request, shareOutsideKey);
+      if (outsideDenied) return outsideDenied;
+    }
+    return null;
+  }
+
+  const inScope = isLddIdInOrgScope({
+    orgScope,
+    principalType: principalType as LddPrincipalType,
+    principalId,
+  });
+  if (!inScope) {
+    const outsideDenied = await requireDashboardCoreAction(request, shareOutsideKey);
+    if (outsideDenied) return outsideDenied;
+  }
+  return null;
+}
 
 async function loadDashboardByKey(db: ReturnType<typeof getDb>, key: string) {
   const res = await db.execute(sql`
@@ -108,11 +181,8 @@ export async function POST(request: NextRequest, { params }: { params: { key: st
       return NextResponse.json({ error: 'principalType must be user, group, role, location, division, or department' }, { status: 400 });
     }
 
-    // Keep non-user sharing admin-only (matches principal option fetchers and prevents 403 churn for regular users).
-    const isProbablyAdmin = Array.isArray(user.roles) && user.roles.some((r: any) => String(r || '').toLowerCase() === 'admin');
-    if (!isProbablyAdmin && principalType !== 'user') {
-      return NextResponse.json({ error: 'Only admins can share with non-user principals (groups, roles, or LDD)' }, { status: 403 });
-    }
+    const shareDenied = await enforceSharePermissions({ request, user, principalType, principalId });
+    if (shareDenied) return shareDenied;
 
     const db = getDb();
     const dash = await loadDashboardByKey(db, key);

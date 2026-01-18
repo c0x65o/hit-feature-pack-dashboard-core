@@ -105,6 +105,40 @@ function isLddSharingEnabled() {
         return false;
     }
 }
+function useActionPermission(actionKey) {
+    const [allowed, setAllowed] = React.useState(false);
+    const [loading, setLoading] = React.useState(Boolean(actionKey));
+    React.useEffect(() => {
+        let active = true;
+        if (!actionKey) {
+            setAllowed(false);
+            setLoading(false);
+            return () => { };
+        }
+        setLoading(true);
+        fetchWithAuth(`/api/auth/permissions/actions/check/${encodeURIComponent(actionKey)}`)
+            .then(async (res) => {
+            const json = await res.json().catch(() => ({}));
+            if (!active)
+                return;
+            setAllowed(Boolean(json?.ok));
+        })
+            .catch(() => {
+            if (!active)
+                return;
+            setAllowed(false);
+        })
+            .finally(() => {
+            if (!active)
+                return;
+            setLoading(false);
+        });
+        return () => {
+            active = false;
+        };
+    }, [actionKey]);
+    return { allowed, loading };
+}
 function selectValue(v) {
     return typeof v === 'string' ? v : String(v?.target?.value ?? '');
 }
@@ -642,6 +676,30 @@ export function Dashboards(props = {}) {
     const { colors, radius } = useSafeThemeTokens();
     const searchParams = useSearchParams();
     const searchParamsString = searchParams?.toString() || '';
+    const { allowed: canShareUser } = useActionPermission('dashboard-core.dashboards.share.user');
+    const { allowed: canShareGroup } = useActionPermission('dashboard-core.dashboards.share.group');
+    const { allowed: canShareLdd } = useActionPermission('dashboard-core.dashboards.share.ldd');
+    const { allowed: canShareOutside } = useActionPermission('dashboard-core.dashboards.scope.share_outside');
+    const shareLddEnabled = isLddSharingEnabled() && canShareLdd;
+    const sharePrincipalsConfig = React.useMemo(() => shareLddEnabled
+        ? {
+            users: canShareUser,
+            groups: canShareGroup,
+            roles: canShareGroup,
+            locations: { enabled: canShareLdd, label: 'Location' },
+            divisions: { enabled: canShareLdd, label: 'Division' },
+            departments: { enabled: canShareLdd, label: 'Department' },
+        }
+        : {
+            users: canShareUser,
+            groups: canShareGroup,
+            roles: canShareGroup,
+        }, [canShareGroup, canShareLdd, canShareUser, shareLddEnabled]);
+    const shareFetchPrincipals = React.useMemo(() => createFetchPrincipals({
+        isAdmin: false,
+        userScope: canShareOutside ? 'all' : 'ldd',
+        groupsEnabled: canShareGroup,
+    }), [canShareGroup, canShareOutside]);
     // Use prop when present; we no longer read pack from the query string.
     const pack = React.useMemo(() => (packProp ? packProp.trim() : ''), [packProp]);
     const defaultPacks = React.useMemo(() => ['crm', 'projects', 'marketing'], []);
@@ -3052,11 +3110,9 @@ export function Dashboards(props = {}) {
                                             { value: 'custom', label: 'Custom' },
                                         ] }), preset === 'custom' ? (_jsxs(_Fragment, { children: [_jsx(Input, { type: "date", value: customStart, onChange: (e) => setCustomStart(e.target.value) }), _jsx(Input, { type: "date", value: customEnd, onChange: (e) => setCustomEnd(e.target.value) })] })) : null, _jsx(Button, { onClick: () => queryMetrics(), disabled: loadingDash, children: "Refresh" }), definition && definition.canEdit ? (_jsx(Button, { variant: "secondary", onClick: openShares, children: "Share" })) : null] })] }), _jsx("div", { className: "subtitle", children: definition?.description || '—' }), error ? _jsx("div", { style: { color: '#ef4444', fontSize: 13 }, children: error }) : null, _jsxs("div", { className: "grid", children: [loadingDash && !definition ? (_jsx("div", { className: "span-12", children: _jsx(Card, { children: _jsx("div", { style: { padding: 18 }, children: _jsx(Spinner, {}) }) }) })) : null, loadingDash && definition ? (_jsx("div", { className: "span-12", style: { opacity: 0.9 }, children: _jsxs("div", { style: { display: 'flex', alignItems: 'center', gap: 10, padding: '6px 2px' }, children: [_jsx(Spinner, {}), _jsx("span", { style: { fontSize: 13, color: colors.text.muted }, children: "Loading dashboard\u2026" })] }) })) : null, definition ? widgetList.map((w) => renderWidget(w)) : null] }), _jsx(Modal, { open: shareOpen, onClose: () => setShareOpen(false), title: "Share dashboard", description: definition ? `ACL for ${definition.name}` : '', children: _jsxs("div", { style: { padding: 12 }, children: [sharesError ? _jsx("div", { style: { color: '#ef4444', fontSize: 13, marginBottom: 10 }, children: sharesError }) : null, sharesLoading ? _jsx(Spinner, {}) : (_jsx(AclPicker, { config: {
                                         mode: 'granular',
-                                        principals: isLddSharingEnabled()
-                                            ? { users: true, groups: true, roles: true, locations: true, divisions: true, departments: true }
-                                            : { users: true, groups: true, roles: true },
+                                        principals: sharePrincipalsConfig,
                                         granularPermissions: [{ key: 'READ', label: 'Read' }],
-                                    }, disabled: !definition, loading: sharesLoading, error: sharesError, fetchPrincipals: createFetchPrincipals({ isAdmin: true }), entries: (isLddSharingEnabled()
+                                    }, disabled: !definition, loading: sharesLoading, error: sharesError, fetchPrincipals: shareFetchPrincipals, entries: (shareLddEnabled
                                         ? shares
                                         : shares.filter((s) => s.principalType === 'user' || s.principalType === 'group' || s.principalType === 'role')).map((s) => ({
                                         id: s.id,
