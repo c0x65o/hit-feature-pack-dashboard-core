@@ -5,7 +5,7 @@ import { useSearchParams } from 'next/navigation';
 import { useUi } from '@hit/ui-kit';
 import { AclPicker } from '@hit/ui-kit/components/AclPicker';
 import { createFetchPrincipals } from '@hit/feature-pack-auth-core';
-import { useThemeTokens } from '@hit/ui-kit';
+import { useThemeContext, darkTheme, lightTheme, getConfiguredTheme } from '@hit/ui-kit';
 import { LucideIcon } from '../utils/lucide-dynamic';
 import { encodeReportPrefill } from '../utils/report-prefill';
 import { normalizePieBlock } from '../reporting/report-blocks';
@@ -199,8 +199,60 @@ function pickEntityKindForMetric(item) {
         return 'project';
     return kinds[0];
 }
+function groupWidgetsByKind(widgets) {
+    const out = {};
+    const list = Array.isArray(widgets) ? widgets : [];
+    for (const w of list) {
+        const kind = String(w?.kind || '').trim();
+        if (!kind)
+            continue;
+        if (!out[kind])
+            out[kind] = [];
+        out[kind].push(w);
+    }
+    return out;
+}
+function resolveWidgetSpanClass(widget) {
+    const grid = widget?.grid || {};
+    const span = typeof grid.w === 'number'
+        ? grid.w
+        : widget?.kind === 'kpi'
+            ? 3
+            : widget?.kind === 'pie' || widget?.kind === 'api_pie'
+                ? 6
+                : 12;
+    if (span === 12)
+        return 'span-12';
+    if (span === 6)
+        return 'span-6';
+    if (span === 4)
+        return 'span-4';
+    return 'span-3';
+}
+function useSafeThemeTokens() {
+    const ctx = useThemeContext();
+    if (ctx?.theme)
+        return ctx.theme;
+    const fallback = getConfiguredTheme?.() === 'dark' ? darkTheme : lightTheme;
+    return fallback;
+}
+function formatBucketLabel(bucket, bucketIso) {
+    if (!bucketIso)
+        return '';
+    const d = new Date(bucketIso);
+    if (!Number.isFinite(d.getTime()))
+        return String(bucketIso);
+    if (bucket === 'month')
+        return d.toLocaleDateString(undefined, { month: 'short' });
+    if (bucket === 'week') {
+        const m = d.toLocaleDateString(undefined, { month: 'short' });
+        const day = d.getDate();
+        return `Wk ${m} ${day}`;
+    }
+    return d.toLocaleDateString(undefined, { weekday: 'short' });
+}
 function Donut({ slices, format, onSliceClick, }) {
-    const { colors, radius, shadows } = useThemeTokens();
+    const { colors, radius, shadows } = useSafeThemeTokens();
     const total = slices.reduce((a, s) => a + (Number.isFinite(s.value) ? s.value : 0), 0);
     // Show empty state if no data
     if (total === 0 || slices.length === 0) {
@@ -333,7 +385,7 @@ function dayKey(d) {
     return `${yyyy}-${mm}-${dd}`;
 }
 function MultiLineChart({ title, format, series, bucket, bucketControl, timelineOverlay, timelineEvents, onDrill, onDrillMenu, }) {
-    const { colors, radius, shadows } = useThemeTokens();
+    const { colors, radius, shadows } = useSafeThemeTokens();
     const wPx = 900;
     const hPx = 240;
     const paddingX = 44;
@@ -587,7 +639,7 @@ function fetchWithAuth(input, init) {
 export function Dashboards(props = {}) {
     const { pack: packProp, dashboardKey: dashboardKeyProp, onNavigate } = props;
     const { Page, Card, Button, Dropdown, Select, Input, Modal, Spinner, Badge, DataTable } = useUi();
-    const { colors, radius } = useThemeTokens();
+    const { colors, radius } = useSafeThemeTokens();
     const searchParams = useSearchParams();
     const searchParamsString = searchParams?.toString() || '';
     // Use prop when present; we no longer read pack from the query string.
@@ -942,6 +994,9 @@ export function Dashboards(props = {}) {
     const [sharesError, setSharesError] = React.useState(null);
     const [kpiValues, setKpiValues] = React.useState({});
     const [kpiCatalogTotals, setKpiCatalogTotals] = React.useState({});
+    const [gaugeValues, setGaugeValues] = React.useState({});
+    const [tabsData, setTabsData] = React.useState({});
+    const [tabsActiveByWidget, setTabsActiveByWidget] = React.useState({});
     const [pieSlices, setPieSlices] = React.useState({});
     const [apiPieSlices, setApiPieSlices] = React.useState({});
     const [apiTables, setApiTables] = React.useState({});
@@ -953,6 +1008,8 @@ export function Dashboards(props = {}) {
     const [timelineLoading, setTimelineLoading] = React.useState(false);
     // Pie drilldown (slice -> underlying points)
     const [drillOpen, setDrillOpen] = React.useState(false);
+    const [drillMinimized, setDrillMinimized] = React.useState(false);
+    const [drillMaximized, setDrillMaximized] = React.useState(false);
     const [drillLoading, setDrillLoading] = React.useState(false);
     const [drillError, setDrillError] = React.useState(null);
     const [drillTitle, setDrillTitle] = React.useState('Drilldown');
@@ -973,6 +1030,7 @@ export function Dashboards(props = {}) {
     const runDrilldown = React.useCallback(async (args) => {
         const page = typeof args.page === 'number' ? args.page : 1;
         setDrillOpen(true);
+        setDrillMinimized(false);
         setDrillTitle(args.title || 'Drilldown');
         setDrillFormat(args.format);
         setDrillError(null);
@@ -1013,6 +1071,7 @@ export function Dashboards(props = {}) {
         }
         // aggregateRow: let the server derive the exact filter (bucket narrowing, entityId/groupBy dims).
         setDrillOpen(true);
+        setDrillMinimized(false);
         setDrillTitle(d.title || 'Drilldown');
         setDrillFormat(d.format);
         setDrillError(null);
@@ -1351,766 +1410,919 @@ export function Dashboards(props = {}) {
             return;
         const def = definition.definition;
         const widgets = Array.isArray(def.widgets) ? def.widgets : [];
-        // KPI Catalog (auto-generated KPI tiles from metrics catalog)
-        const kpiCatalogs = widgets.filter((w) => w?.kind === 'kpi_catalog');
-        if (kpiCatalogs.length) {
-            setKpiCatalogTotals((prev) => {
-                const next = { ...prev };
-                for (const w of kpiCatalogs)
-                    next[w.key] = { loading: true, totalsByMetricKey: prev[w.key]?.totalsByMetricKey || {} };
-                return next;
-            });
-            await Promise.all(kpiCatalogs.map(async (w) => {
-                try {
-                    // Fetch a local snapshot of the catalog so we can compute immediately (avoid setState timing).
-                    const catalogMap = Object.keys(catalogByKey || {}).length ? catalogByKey : await fetchCatalogMap();
-                    if (!Object.keys(catalogByKey || {}).length && Object.keys(catalogMap).length)
-                        setCatalogByKey(catalogMap);
-                    const pres = w?.presentation || {};
-                    const rawEntityKind = typeof pres?.entityKind === 'string' ? pres.entityKind.trim() : '';
-                    const isAutoEntityKind = rawEntityKind === '' || rawEntityKind.toLowerCase() === 'auto';
-                    const entityKind = !isAutoEntityKind ? rawEntityKind : '';
-                    const onlyWithPoints = pres?.onlyWithPoints === true;
-                    const ownerKind = typeof pres?.owner?.kind === 'string' ? pres.owner.kind.trim().toLowerCase() : '';
-                    const ownerId = typeof pres?.owner?.id === 'string' ? pres.owner.id.trim() : '';
-                    const hasOwnerFilter = Boolean(ownerKind && ownerId);
-                    // Support filtering by entity kinds (metrics that support these entity kinds)
-                    const filterEntityKinds = Array.isArray(pres?.filterEntityKinds)
-                        ? pres.filterEntityKinds.map((x) => String(x || '').trim().toLowerCase()).filter(Boolean)
-                        : [];
-                    const hasEntityKindsFilter = filterEntityKinds.length > 0;
-                    // Support filtering by category
-                    const filterCategories = Array.isArray(pres?.filterCategories)
-                        ? pres.filterCategories.map((x) => String(x || '').trim().toLowerCase()).filter(Boolean)
-                        : [];
-                    const hasCategories = filterCategories.length > 0;
-                    const items = Object.values(catalogMap || {});
-                    const filtered = items
-                        .filter((it) => {
-                        // Filter by owner (e.g., only feature pack metrics)
-                        if (hasOwnerFilter) {
-                            const ik = typeof it?.owner?.kind === 'string' ? String(it.owner.kind).trim().toLowerCase() : '';
-                            const iid = typeof it?.owner?.id === 'string' ? String(it.owner.id).trim() : '';
-                            if (ik !== ownerKind || iid !== ownerId)
-                                return false;
-                        }
-                        // Filter by entity kinds (metrics that support any of these entity kinds)
-                        if (hasEntityKindsFilter) {
-                            const metricEntityKinds = Array.isArray(it.entity_kinds)
-                                ? it.entity_kinds.map((x) => String(x || '').trim().toLowerCase())
-                                : [];
-                            const hasMatch = filterEntityKinds.some((ek) => metricEntityKinds.includes(ek));
-                            if (!hasMatch)
-                                return false;
-                        }
-                        // Filter by category
-                        if (hasCategories) {
-                            const cat = typeof it.category === 'string' ? it.category.trim().toLowerCase() : '';
-                            if (!filterCategories.includes(cat))
-                                return false;
-                        }
-                        // If entityKind is explicitly set (not auto), filter metrics that support it
-                        if (!isAutoEntityKind) {
-                            const kinds = Array.isArray(it.entity_kinds) ? it.entity_kinds : [];
-                            // If the metric declares supported entity kinds, respect it.
-                            // If it doesn't, we cannot safely assume it works for the chosen entityKind.
-                            if (kinds.length === 0)
-                                return false;
-                            if (!kinds.includes(entityKind))
-                                return false;
-                        }
-                        if (onlyWithPoints && Number(it.pointsCount || 0) <= 0)
-                            return false;
-                        return true;
-                    })
-                        .sort((a, b) => String(a.label || a.key).localeCompare(String(b.label || b.key)));
-                    const t = effectiveTime(w);
-                    const totalsByMetricKey = {};
-                    const queries = filtered
-                        .map((it) => {
-                        const mk = String(it.key || '').trim();
-                        if (!mk)
-                            return null;
-                        const roll = String(it.rollup_strategy || '').toLowerCase();
-                        const timeKind = String(it.time_kind || '').toLowerCase();
-                        const agg = roll === 'last' || timeKind === 'realtime' || timeKind === 'none' ? 'last' : 'sum';
-                        const ek = isAutoEntityKind ? pickEntityKindForMetric(it) : entityKind;
-                        // If we can't infer entityKind, omit it and let the backend aggregate across all kinds.
-                        const body = { metricKey: mk, bucket: 'none', agg, groupByEntityId: true };
-                        if (ek)
-                            body.entityKind = ek;
-                        if (t)
-                            Object.assign(body, t);
-                        return body;
-                    })
-                        .filter(Boolean);
-                    const CHUNK = 50;
-                    for (let i = 0; i < queries.length; i += CHUNK) {
-                        const chunk = queries.slice(i, i + CHUNK);
-                        const res = await fetchWithAuth('/api/metrics/query-batch', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ queries: chunk }),
-                        });
-                        const json = await res.json().catch(() => ({}));
-                        if (!res.ok)
-                            throw new Error(json?.error || `metrics/query-batch ${res.status}`);
-                        const results = Array.isArray(json?.results) ? json.results : [];
-                        for (let j = 0; j < chunk.length; j++) {
-                            const q = chunk[j];
-                            const mk = String(q.metricKey || '').trim();
-                            const r = results[j];
-                            const rows = Array.isArray(r?.data) ? r.data : [];
-                            const sum = rows.reduce((acc, rr) => acc + Number(rr.value ?? 0), 0);
-                            totalsByMetricKey[mk] = Number.isFinite(sum) ? sum : 0;
-                        }
-                    }
-                    setKpiCatalogTotals((p) => ({ ...p, [w.key]: { loading: false, totalsByMetricKey } }));
-                }
-                catch {
-                    setKpiCatalogTotals((p) => ({ ...p, [w.key]: { loading: false, totalsByMetricKey: {} } }));
-                }
-            }));
-        }
-        // KPIs
-        const kpis = widgets.filter((w) => w?.kind === 'kpi');
-        setKpiValues((prev) => {
-            const next = { ...prev };
-            for (const w of kpis)
-                next[w.key] = { loading: true };
-            return next;
-        });
-        await Promise.all(kpis.map(async (w) => {
-            try {
-                // Optional non-metrics value source (e.g., project count from Projects API).
-                const valueSource = w?.presentation?.valueSource;
-                const metricKey = String(w?.query?.metricKey || '');
-                const isProjectCount = metricKey === 'fp.projects.project_count';
-                if (valueSource?.kind === 'api_count' || isProjectCount) {
-                    const endpoint = typeof valueSource?.endpoint === 'string' ? valueSource.endpoint : '/api/projects';
-                    const totalField = typeof valueSource?.totalField === 'string' ? valueSource.totalField : 'pagination.total';
-                    const sep = endpoint.includes('?') ? '&' : '?';
-                    const res = await fetch(`${endpoint}${sep}page=1&pageSize=1`);
-                    const json = await res.json().catch(() => ({}));
-                    const total = Array.isArray(json)
-                        ? json.length
-                        : Number(getByPath(json, totalField) ?? 0);
-                    setKpiValues((p) => ({ ...p, [w.key]: { loading: false, value: Number.isFinite(total) ? total : 0 } }));
+        const widgetsByKind = groupWidgetsByKind(widgets);
+        const widgetLoaders = {
+            // KPI Catalog (auto-generated KPI tiles from metrics catalog)
+            kpi_catalog: async () => {
+                const kpiCatalogs = widgetsByKind.kpi_catalog || [];
+                if (!kpiCatalogs.length)
                     return;
-                }
-                // Generic non-metrics value source (extract a single numeric field from an endpoint).
-                if (valueSource?.kind === 'api_value') {
-                    const endpoint = typeof valueSource?.endpoint === 'string' ? valueSource.endpoint : '';
-                    const valueField = typeof valueSource?.valueField === 'string' ? valueSource.valueField : '';
-                    if (!endpoint || !valueField) {
-                        setKpiValues((p) => ({ ...p, [w.key]: { loading: false, value: 0 } }));
-                        return;
-                    }
-                    const res = await fetchWithAuth(endpoint);
-                    const json = await res.json().catch(() => ({}));
-                    const raw = getByPath(json, valueField);
-                    const v = Number(raw ?? 0);
-                    setKpiValues((p) => ({ ...p, [w.key]: { loading: false, value: Number.isFinite(v) ? v : 0 } }));
-                    return;
-                }
-                // Sum the latest value per entity (useful for totals like wishlist_cumulative_total across projects).
-                if (valueSource?.kind === 'metrics_sum_last_per_entity' && typeof valueSource.metricKey === 'string') {
-                    const t = effectiveTime(w); // usually null for all_time
-                    const body = {
-                        metricKey: String(valueSource.metricKey),
-                        bucket: 'none',
-                        agg: 'last',
-                        entityKind: typeof valueSource.entityKind === 'string' ? valueSource.entityKind : (w?.query?.entityKind || undefined),
-                        groupByEntityId: true,
-                    };
-                    if (t)
-                        Object.assign(body, t);
-                    const res = await fetchWithAuth('/api/metrics/query', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(body),
-                    });
-                    const json = await res.json().catch(() => ({}));
-                    if (!res.ok)
-                        throw new Error(json?.error || `metrics/query ${res.status}`);
-                    const rows = Array.isArray(json.data) ? json.data : [];
-                    const sum = rows.reduce((acc, r) => acc + Number(r.value ?? 0), 0);
-                    setKpiValues((p) => ({ ...p, [w.key]: { loading: false, value: Number.isFinite(sum) ? sum : 0 } }));
-                    return;
-                }
-                // Generic aggregation per entity, then summed across entities.
-                // Example: wishlist_net_change sum across all projects (all_time).
-                if (valueSource?.kind === 'metrics_sum_agg_per_entity' && typeof valueSource.metricKey === 'string') {
-                    const t = effectiveTime(w);
-                    const agg = typeof valueSource.agg === 'string' ? valueSource.agg : 'sum';
-                    const body = {
-                        metricKey: String(valueSource.metricKey),
-                        bucket: 'none',
-                        agg,
-                        entityKind: typeof valueSource.entityKind === 'string' ? valueSource.entityKind : (w?.query?.entityKind || undefined),
-                        groupByEntityId: true,
-                    };
-                    if (t)
-                        Object.assign(body, t);
-                    const res = await fetchWithAuth('/api/metrics/query', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(body),
-                    });
-                    const json = await res.json().catch(() => ({}));
-                    if (!res.ok)
-                        throw new Error(json?.error || `metrics/query ${res.status}`);
-                    const rows = Array.isArray(json.data) ? json.data : [];
-                    const sum = rows.reduce((acc, r) => acc + Number(r.value ?? 0), 0);
-                    setKpiValues((p) => ({ ...p, [w.key]: { loading: false, value: Number.isFinite(sum) ? sum : 0 } }));
-                    return;
-                }
-                // Sum of latest-per-entity across multiple metric keys (blended totals, e.g. followers across platforms).
-                if (valueSource?.kind === 'metrics_sum_last_per_entity_multi' && Array.isArray(valueSource.metricKeys)) {
-                    const t = effectiveTime(w); // usually null for all_time
-                    const entityKind = typeof valueSource.entityKind === 'string' ? valueSource.entityKind : (w?.query?.entityKind || undefined);
-                    const keys = valueSource.metricKeys.map((x) => String(x || '').trim()).filter(Boolean);
-                    let sumAll = 0;
-                    for (const mk of keys) {
-                        const body = { metricKey: mk, bucket: 'none', agg: 'last', entityKind, groupByEntityId: true };
-                        if (t)
-                            Object.assign(body, t);
-                        const res = await fetchWithAuth('/api/metrics/query', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-                        const json = await res.json().catch(() => ({}));
-                        if (!res.ok)
-                            throw new Error(json?.error || `metrics/query ${res.status}`);
-                        const rows = Array.isArray(json.data) ? json.data : [];
-                        sumAll += rows.reduce((acc, r) => acc + Number(r.value ?? 0), 0);
-                    }
-                    setKpiValues((p) => ({ ...p, [w.key]: { loading: false, value: Number.isFinite(sumAll) ? sumAll : 0 } }));
-                    return;
-                }
-                const t = effectiveTime(w);
-                const body = { ...(w.query || {}) };
-                if (t)
-                    Object.assign(body, t);
-                const res = await fetchWithAuth('/api/metrics/query', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-                const json = await res.json().catch(() => ({}));
-                if (!res.ok)
-                    throw new Error(json?.error || `metrics/query ${res.status}`);
-                const rows = Array.isArray(json.data) ? json.data : [];
-                const v = Number(rows[0]?.value ?? 0);
-                let prev = undefined;
-                if (t && w?.presentation?.compare === 'previous_period') {
-                    const start = new Date(t.start);
-                    const end = new Date(t.end);
-                    const dur = end.getTime() - start.getTime();
-                    const prevEnd = new Date(start.getTime() - 1);
-                    const prevStart = new Date(prevEnd.getTime() - dur);
-                    const prevBody = { ...(w.query || {}), start: prevStart.toISOString(), end: prevEnd.toISOString() };
-                    const r2 = await fetchWithAuth('/api/metrics/query', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(prevBody) });
-                    const j2 = await r2.json().catch(() => ({}));
-                    const rr = Array.isArray(j2.data) ? j2.data : [];
-                    prev = Number(rr[0]?.value ?? 0);
-                }
-                setKpiValues((p) => ({ ...p, [w.key]: { loading: false, value: Number.isFinite(v) ? v : 0, prev } }));
-            }
-            catch (err) {
-                console.warn(`[Dashboard] KPI "${w.key}" failed:`, err);
-                setKpiValues((p) => ({ ...p, [w.key]: { loading: false, value: 0, error: String(err) } }));
-            }
-        }));
-        // Pie
-        const pies = widgets.filter((w) => w?.kind === 'pie');
-        setPieSlices((prev) => {
-            const next = { ...prev };
-            for (const w of pies)
-                next[w.key] = { loading: true, slices: prev[w.key]?.slices || [] };
-            return next;
-        });
-        await Promise.all(pies.map(async (w) => {
-            try {
-                const block = normalizePieBlock({
-                    title: String(w.title || 'Pie'),
-                    format: (w?.presentation?.format === 'usd') ? 'usd' : 'number',
-                    time: w?.time === 'all_time' ? 'all_time' : 'inherit',
-                    query: { ...(w.query || {}) },
-                    groupByKey: String(w?.presentation?.groupByKey || 'region'),
-                    labelKey: String(w?.presentation?.labelKey || ''),
-                    rawKey: String(w?.presentation?.rawKey || ''),
-                    topN: Number(w?.presentation?.topN || 5),
-                    otherLabel: String(w?.presentation?.otherLabel || 'Other'),
+                setKpiCatalogTotals((prev) => {
+                    const next = { ...prev };
+                    for (const w of kpiCatalogs)
+                        next[w.key] = { loading: true, totalsByMetricKey: prev[w.key]?.totalsByMetricKey || {} };
+                    return next;
                 });
-                const out = await runPieBlock({ block, timeRange: effectiveTime(w) });
-                setPieSlices((p) => ({ ...p, [w.key]: { loading: false, slices: out.slices, otherLabel: out.otherLabel } }));
-            }
-            catch {
-                setPieSlices((p) => ({ ...p, [w.key]: { loading: false, slices: [], otherLabel: String(w?.presentation?.otherLabel || 'Other') } }));
-            }
-        }));
-        // API Pie (non-metrics grouped pies, e.g. CRM pipeline stage breakdown)
-        const apiPies = widgets.filter((w) => w?.kind === 'api_pie');
-        if (apiPies.length) {
-            setApiPieSlices((prev) => {
-                const next = { ...prev };
-                for (const w of apiPies)
-                    next[w.key] = { loading: true, slices: prev[w.key]?.slices || [] };
-                return next;
-            });
-            await Promise.all(apiPies.map(async (w) => {
-                try {
-                    const pres = w?.presentation || {};
-                    const endpoint = String(pres.endpoint || '').trim();
-                    if (!endpoint)
-                        throw new Error('Missing api_pie.presentation.endpoint');
-                    const res = await fetchWithAuth(endpoint);
-                    const json = await res.json().catch(() => ({}));
-                    if (!res.ok)
-                        throw new Error(json?.error || `api_pie fetch ${res.status}`);
-                    const itemsField = String(pres.itemsField || 'items');
-                    const labelField = String(pres.labelField || 'label');
-                    const valueField = String(pres.valueField || 'value');
-                    const rawField = String(pres.rawField || labelField);
-                    const hrefTemplate = typeof pres.hrefTemplate === 'string' ? pres.hrefTemplate : '';
-                    const topN = Math.max(1, Math.min(25, Number(pres.topN || 8) || 8));
-                    const otherLabel = String(pres.otherLabel || 'Other');
-                    const items = getByPath(json, itemsField);
-                    const arr = Array.isArray(items) ? items : [];
-                    const normalized = arr
-                        .map((it) => ({
-                        label: String(getByPath(it, labelField) ?? 'Unknown'),
-                        raw: getByPath(it, rawField),
-                        value: Number(getByPath(it, valueField) ?? 0),
-                        href: hrefTemplate ? applyTemplate(hrefTemplate, it) : '',
-                    }))
-                        .map((r) => ({ ...r, value: Number.isFinite(r.value) ? r.value : 0 }))
-                        .sort((a, b) => b.value - a.value);
-                    const top = normalized.slice(0, topN);
-                    const otherSum = normalized.slice(topN).reduce((acc, r) => acc + (Number.isFinite(r.value) ? r.value : 0), 0);
-                    const slices = [
-                        ...top.map((r, idx) => ({ ...r, color: palette(idx) })),
-                        ...(otherSum > 0 ? [{ label: otherLabel, raw: '__other__', value: otherSum, color: '#94a3b8', href: '' }] : []),
-                    ];
-                    setApiPieSlices((p) => ({ ...p, [w.key]: { loading: false, slices, otherLabel, error: undefined } }));
-                }
-                catch (e) {
-                    setApiPieSlices((p) => ({
-                        ...p,
-                        [w.key]: {
-                            loading: false,
-                            slices: [],
-                            otherLabel: String(w?.presentation?.otherLabel || 'Other'),
-                            error: String(e?.message || 'Failed to load'),
-                        },
-                    }));
-                }
-            }));
-        }
-        // API Table (non-metrics tabular blocks, e.g. stalled opportunities)
-        const apiTableWidgets = widgets.filter((w) => w?.kind === 'api_table');
-        if (apiTableWidgets.length) {
-            setApiTables((prev) => {
-                const next = { ...prev };
-                for (const w of apiTableWidgets)
-                    next[w.key] = { loading: true, rows: prev[w.key]?.rows || [], total: prev[w.key]?.total };
-                return next;
-            });
-            await Promise.all(apiTableWidgets.map(async (w) => {
-                try {
-                    const pres = w?.presentation || {};
-                    const endpoint = String(pres.endpoint || '').trim();
-                    if (!endpoint)
-                        throw new Error('Missing api_table.presentation.endpoint');
-                    const res = await fetchWithAuth(endpoint);
-                    const json = await res.json().catch(() => ({}));
-                    if (!res.ok)
-                        throw new Error(json?.error || `api_table fetch ${res.status}`);
-                    const itemsField = String(pres.itemsField || 'items');
-                    const totalField = typeof pres.totalField === 'string' ? pres.totalField : '';
-                    const rows = Array.isArray(getByPath(json, itemsField)) ? getByPath(json, itemsField) : [];
-                    const total = totalField ? Number(getByPath(json, totalField) ?? 0) : undefined;
-                    setApiTables((p) => ({ ...p, [w.key]: { loading: false, rows, total: (total != null && Number.isFinite(total)) ? total : undefined } }));
-                }
-                catch {
-                    setApiTables((p) => ({ ...p, [w.key]: { loading: false, rows: [], total: undefined } }));
-                }
-            }));
-        }
-        // Metric Table (metrics drilldown rendered as a table; supports computed metrics too)
-        const metricTableWidgets = widgets.filter((w) => w?.kind === 'metric_table');
-        if (metricTableWidgets.length) {
-            setMetricTables((prev) => {
-                const next = { ...prev };
-                for (const w of metricTableWidgets)
-                    next[w.key] = { loading: true, rows: prev[w.key]?.rows || [], total: prev[w.key]?.total };
-                return next;
-            });
-            await Promise.all(metricTableWidgets.map(async (w) => {
-                try {
-                    const pres = w?.presentation || {};
-                    const pageSize = Math.max(1, Math.min(100, Number(pres.pageSize || 10) || 10));
-                    const t = effectiveTime(w);
-                    const q = { ...(w.query || {}) };
-                    // pointFilter: use query fields (metricKey + dims + params) and attach time range if present
-                    const pointFilter = {
-                        metricKey: String(q.metricKey || '').trim(),
-                    };
-                    if (!pointFilter.metricKey)
-                        throw new Error('Missing query.metricKey for metric_table');
-                    if (q.entityKind)
-                        pointFilter.entityKind = q.entityKind;
-                    if (q.entityId)
-                        pointFilter.entityId = q.entityId;
-                    if (Array.isArray(q.entityIds))
-                        pointFilter.entityIds = q.entityIds;
-                    if (q.dataSourceId)
-                        pointFilter.dataSourceId = q.dataSourceId;
-                    if (q.sourceGranularity)
-                        pointFilter.sourceGranularity = q.sourceGranularity;
-                    if (q.params && typeof q.params === 'object')
-                        pointFilter.params = q.params;
-                    if (q.dimensions && typeof q.dimensions === 'object')
-                        pointFilter.dimensions = q.dimensions;
-                    if (t) {
-                        pointFilter.start = t.start;
-                        pointFilter.end = t.end;
-                    }
-                    const res = await fetchWithAuth('/api/metrics/drilldown', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ pointFilter, page: 1, pageSize, includeContributors: false }),
-                    });
-                    const json = await res.json().catch(() => ({}));
-                    if (!res.ok)
-                        throw new Error(json?.error || `metrics/drilldown ${res.status}`);
-                    const points = Array.isArray(json?.points) ? json.points : [];
-                    const rows = points.map((p) => ({
-                        id: String(p?.entityId || p?.id || ''),
-                        date: p?.date,
-                        value: p?.value,
-                        entityKind: p?.entityKind,
-                        entityId: p?.entityId,
-                        dataSourceId: p?.dataSourceId,
-                        ...(p?.dimensions && typeof p.dimensions === 'object' ? p.dimensions : {}),
-                    }));
-                    const total = Number(json?.pagination?.total ?? rows.length);
-                    setMetricTables((p) => ({ ...p, [w.key]: { loading: false, rows, total: Number.isFinite(total) ? total : undefined } }));
-                }
-                catch {
-                    setMetricTables((p) => ({ ...p, [w.key]: { loading: false, rows: [], total: undefined } }));
-                }
-            }));
-        }
-        // Line (multi series)
-        const lines = widgets.filter((w) => w?.kind === 'line');
-        setLineSeries((prev) => {
-            const next = { ...prev };
-            for (const w of lines)
-                next[w.key] = { loading: true };
-            return next;
-        });
-        await Promise.all(lines.map(async (w) => {
-            try {
-                const t = effectiveTime(w);
-                if (!t)
-                    throw new Error('Line widgets require time range');
-                const bucketOverride = lineBucketByWidgetKey[w.key];
-                // Explicit series: [{ key, query }]
-                if (Array.isArray(w.series) && w.series.length > 0) {
-                    const out = [];
-                    for (let i = 0; i < w.series.length; i++) {
-                        const s = w.series[i];
-                        const body = { ...(s.query || {}), start: t.start, end: t.end };
-                        const res = await fetchWithAuth('/api/metrics/query', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-                        const json = await res.json().catch(() => ({}));
-                        if (!res.ok)
-                            throw new Error(json?.error || `metrics/query ${res.status}`);
-                        const rows = Array.isArray(json.data) ? json.data : [];
-                        const pts = rows
-                            .map((r) => ({ t: r.bucket ? new Date(r.bucket).getTime() : NaN, v: Number(r.value ?? 0), bucketIso: typeof r.bucket === 'string' ? r.bucket : undefined }))
-                            .filter((p) => Number.isFinite(p.t))
-                            .sort((a, b) => a.t - b.t);
-                        out.push({
-                            id: `explicit_${w.key}_${i}`,
-                            label: String(s.key || `Series ${i + 1}`),
-                            color: palette(i),
-                            points: pts,
-                            drill: { baseQuery: body, rowContextBase: {}, titlePrefix: String(w.title || 'Line') },
-                        });
-                    }
-                    setLineSeries((p) => ({ ...p, [w.key]: { loading: false, series: out } }));
-                    return;
-                }
-                // Computed top-N entities
-                if (w.seriesSpec?.mode === 'top_n_entities') {
-                    const spec = w.seriesSpec;
-                    const metricKey = String(spec.metricKey || '');
-                    const entityKind = String(spec.entityKind || 'project');
-                    const bucket = String(bucketOverride || spec.bucket || 'day');
-                    const agg = String(spec.agg || 'sum');
-                    const topN = Number(spec.topN || 5);
-                    const includeOther = spec.includeOther !== false;
-                    const otherLabel = String(spec.otherLabel || 'Other');
-                    const cumulative = Boolean(spec.cumulative);
-                    // totals for ranking
-                    const totalsRes = await fetchWithAuth('/api/metrics/query', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ metricKey, bucket: 'none', agg, entityKind, groupByEntityId: true, start: t.start, end: t.end }),
-                    });
-                    const totalsJson = await totalsRes.json().catch(() => ({}));
-                    const totalsRows = Array.isArray(totalsJson.data) ? totalsJson.data : [];
-                    const ranked = totalsRows
-                        .map((r) => ({ entityId: String(r.entityId || ''), value: Number(r.value ?? 0) }))
-                        .filter((r) => r.entityId)
-                        .sort((a, b) => b.value - a.value);
-                    const topIds = ranked.slice(0, topN).map((r) => r.entityId);
-                    const fetchedNames = spec.labelSource?.source === 'projects' ? await fetchProjectNames(topIds) : {};
-                    // series for top ids
-                    const seriesRes = await fetchWithAuth('/api/metrics/query', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ metricKey, bucket, agg, entityKind, groupByEntityId: true, entityIds: topIds, start: t.start, end: t.end }),
-                    });
-                    const seriesJson = await seriesRes.json().catch(() => ({}));
-                    const seriesRows = Array.isArray(seriesJson.data) ? seriesJson.data : [];
-                    // total series (for other)
-                    const totalRes = await fetchWithAuth('/api/metrics/query', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ metricKey, bucket, agg, entityKind, start: t.start, end: t.end }),
-                    });
-                    const totalJson = await totalRes.json().catch(() => ({}));
-                    const totalRows = Array.isArray(totalJson.data) ? totalJson.data : [];
-                    const buckets = totalRows
-                        .map((r) => (r.bucket ? new Date(r.bucket).getTime() : NaN))
-                        .filter((x) => Number.isFinite(x))
-                        .sort((a, b) => a - b);
-                    const totalByT = new Map();
-                    const bucketIsoByT = new Map();
-                    for (const r of totalRows) {
-                        const tt = r.bucket ? new Date(r.bucket).getTime() : NaN;
-                        if (!Number.isFinite(tt))
-                            continue;
-                        totalByT.set(tt, Number(r.value ?? 0));
-                        if (typeof r.bucket === 'string')
-                            bucketIsoByT.set(tt, r.bucket);
-                    }
-                    const byEntity = new Map();
-                    for (const r of seriesRows) {
-                        const id = String(r.entityId || '');
-                        const tt = r.bucket ? new Date(r.bucket).getTime() : NaN;
-                        if (!id || !Number.isFinite(tt))
-                            continue;
-                        if (!byEntity.has(id))
-                            byEntity.set(id, new Map());
-                        byEntity.get(id).set(tt, Number(r.value ?? 0));
-                    }
-                    const baseQuery = { metricKey, bucket, agg, entityKind, groupByEntityId: true, entityIds: topIds, start: t.start, end: t.end };
-                    const out = [];
-                    topIds.forEach((id, idx) => {
-                        const m = byEntity.get(id) || new Map();
-                        const label = spec.labelSource?.source === 'projects' ? (fetchedNames[id] || projectNames[id] || id) : id;
-                        out.push({
-                            id: `ent_${w.key}_${id}`,
-                            label,
-                            color: palette(idx),
-                            points: buckets.map((tt) => ({ t: tt, v: Number(m.get(tt) ?? 0), bucketIso: bucketIsoByT.get(tt) })),
-                            drill: { baseQuery, rowContextBase: { entityId: id }, titlePrefix: String(w.title || 'Line') },
-                        });
-                    });
-                    if (includeOther) {
-                        // "Other" = all entities except topIds. We approximate by enumerating entityIds beyond topN when feasible.
-                        const otherIds = ranked.slice(topN).map((r) => r.entityId).filter(Boolean);
-                        const otherIdsLimited = otherIds.slice(0, 1000);
-                        const otherBaseQuery = otherIdsLimited.length
-                            ? { metricKey, bucket, agg, entityKind, groupByEntityId: true, entityIds: otherIdsLimited, start: t.start, end: t.end }
-                            : null;
-                        out.push({
-                            id: `other_${w.key}`,
-                            label: otherLabel,
-                            color: '#94a3b8',
-                            points: buckets.map((tt) => {
-                                const total = Number(totalByT.get(tt) ?? 0);
-                                const sumTop = topIds.reduce((acc, id) => acc + Number(byEntity.get(id)?.get(tt) ?? 0), 0);
-                                return { t: tt, v: Math.max(0, total - sumTop), bucketIso: bucketIsoByT.get(tt) };
-                            }),
-                            drill: otherBaseQuery ? { baseQuery: otherBaseQuery, rowContextBase: {}, titlePrefix: String(w.title || 'Line') } : null,
-                        });
-                    }
-                    if (cumulative) {
-                        for (const s of out) {
-                            let acc = 0;
-                            s.points = s.points.map((p) => {
-                                acc += p.v;
-                                return { ...p, v: acc };
+                await Promise.all(kpiCatalogs.map(async (w) => {
+                    try {
+                        // Fetch a local snapshot of the catalog so we can compute immediately (avoid setState timing).
+                        const catalogMap = Object.keys(catalogByKey || {}).length ? catalogByKey : await fetchCatalogMap();
+                        if (!Object.keys(catalogByKey || {}).length && Object.keys(catalogMap).length)
+                            setCatalogByKey(catalogMap);
+                        const pres = w?.presentation || {};
+                        const rawEntityKind = typeof pres?.entityKind === 'string' ? pres.entityKind.trim() : '';
+                        const isAutoEntityKind = rawEntityKind === '' || rawEntityKind.toLowerCase() === 'auto';
+                        const entityKind = !isAutoEntityKind ? rawEntityKind : '';
+                        const onlyWithPoints = pres?.onlyWithPoints === true;
+                        const ownerKind = typeof pres?.owner?.kind === 'string' ? pres.owner.kind.trim().toLowerCase() : '';
+                        const ownerId = typeof pres?.owner?.id === 'string' ? pres.owner.id.trim() : '';
+                        const hasOwnerFilter = Boolean(ownerKind && ownerId);
+                        // Support filtering by entity kinds (metrics that support these entity kinds)
+                        const filterEntityKinds = Array.isArray(pres?.filterEntityKinds)
+                            ? pres.filterEntityKinds.map((x) => String(x || '').trim().toLowerCase()).filter(Boolean)
+                            : [];
+                        const hasEntityKindsFilter = filterEntityKinds.length > 0;
+                        // Support filtering by category
+                        const filterCategories = Array.isArray(pres?.filterCategories)
+                            ? pres.filterCategories.map((x) => String(x || '').trim().toLowerCase()).filter(Boolean)
+                            : [];
+                        const hasCategories = filterCategories.length > 0;
+                        const items = Object.values(catalogMap || {});
+                        const filtered = items
+                            .filter((it) => {
+                            // Filter by owner (e.g., only feature pack metrics)
+                            if (hasOwnerFilter) {
+                                const ik = typeof it?.owner?.kind === 'string' ? String(it.owner.kind).trim().toLowerCase() : '';
+                                const iid = typeof it?.owner?.id === 'string' ? String(it.owner.id).trim() : '';
+                                if (ik !== ownerKind || iid !== ownerId)
+                                    return false;
+                            }
+                            // Filter by entity kinds (metrics that support any of these entity kinds)
+                            if (hasEntityKindsFilter) {
+                                const metricEntityKinds = Array.isArray(it.entity_kinds)
+                                    ? it.entity_kinds.map((x) => String(x || '').trim().toLowerCase())
+                                    : [];
+                                const hasMatch = filterEntityKinds.some((ek) => metricEntityKinds.includes(ek));
+                                if (!hasMatch)
+                                    return false;
+                            }
+                            // Filter by category
+                            if (hasCategories) {
+                                const cat = typeof it.category === 'string' ? it.category.trim().toLowerCase() : '';
+                                if (!filterCategories.includes(cat))
+                                    return false;
+                            }
+                            // If entityKind is explicitly set (not auto), filter metrics that support it
+                            if (!isAutoEntityKind) {
+                                const kinds = Array.isArray(it.entity_kinds) ? it.entity_kinds : [];
+                                // If the metric declares supported entity kinds, respect it.
+                                // If it doesn't, we cannot safely assume it works for the chosen entityKind.
+                                if (kinds.length === 0)
+                                    return false;
+                                if (!kinds.includes(entityKind))
+                                    return false;
+                            }
+                            if (onlyWithPoints && Number(it.pointsCount || 0) <= 0)
+                                return false;
+                            return true;
+                        })
+                            .sort((a, b) => String(a.label || a.key).localeCompare(String(b.label || b.key)));
+                        const t = effectiveTime(w);
+                        const totalsByMetricKey = {};
+                        const queries = filtered
+                            .map((it) => {
+                            const mk = String(it.key || '').trim();
+                            if (!mk)
+                                return null;
+                            const roll = String(it.rollup_strategy || '').toLowerCase();
+                            const timeKind = String(it.time_kind || '').toLowerCase();
+                            const agg = roll === 'last' || timeKind === 'realtime' || timeKind === 'none' ? 'last' : 'sum';
+                            const ek = isAutoEntityKind ? pickEntityKindForMetric(it) : entityKind;
+                            // If we can't infer entityKind, omit it and let the backend aggregate across all kinds.
+                            const body = { metricKey: mk, bucket: 'none', agg, groupByEntityId: true };
+                            if (ek)
+                                body.entityKind = ek;
+                            if (t)
+                                Object.assign(body, t);
+                            return body;
+                        })
+                            .filter(Boolean);
+                        const CHUNK = 50;
+                        for (let i = 0; i < queries.length; i += CHUNK) {
+                            const chunk = queries.slice(i, i + CHUNK);
+                            const res = await fetchWithAuth('/api/metrics/query-batch', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ queries: chunk }),
                             });
+                            const json = await res.json().catch(() => ({}));
+                            if (!res.ok)
+                                throw new Error(json?.error || `metrics/query-batch ${res.status}`);
+                            const results = Array.isArray(json?.results) ? json.results : [];
+                            for (let j = 0; j < chunk.length; j++) {
+                                const q = chunk[j];
+                                const mk = String(q.metricKey || '').trim();
+                                const r = results[j];
+                                const rows = Array.isArray(r?.data) ? r.data : [];
+                                const sum = rows.reduce((acc, rr) => acc + Number(rr.value ?? 0), 0);
+                                totalsByMetricKey[mk] = Number.isFinite(sum) ? sum : 0;
+                            }
                         }
+                        setKpiCatalogTotals((p) => ({ ...p, [w.key]: { loading: false, totalsByMetricKey } }));
                     }
-                    setLineSeries((p) => ({ ...p, [w.key]: { loading: false, series: out } }));
+                    catch {
+                        setKpiCatalogTotals((p) => ({ ...p, [w.key]: { loading: false, totalsByMetricKey: {} } }));
+                    }
+                }));
+            },
+            // KPIs
+            kpi: async () => {
+                const kpis = widgetsByKind.kpi || [];
+                if (!kpis.length)
                     return;
-                }
-                // Computed top-N entities from blended metrics (e.g. followers = sum of last across platforms)
-                if (w.seriesSpec?.mode === 'top_n_entities_multi_metrics') {
-                    const spec = w.seriesSpec;
-                    const entityKind = String(spec.entityKind || 'project');
-                    const metricKeys = Array.isArray(spec.metricKeys) ? spec.metricKeys.map((x) => String(x || '').trim()).filter(Boolean) : [];
-                    const bucket = String(bucketOverride || spec.bucket || 'day');
-                    const agg = String(spec.agg || 'last');
-                    const topN = Number(spec.topN || 5);
-                    const includeOther = spec.includeOther !== false;
-                    const otherLabel = String(spec.otherLabel || 'Other');
-                    const cumulative = Boolean(spec.cumulative);
-                    // 1) totals by entityId across all metric keys for ranking
-                    const totalsByEntity = new Map();
-                    for (const mk of metricKeys) {
-                        const totalsRes = await fetchWithAuth('/api/metrics/query', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ metricKey: mk, bucket: 'none', agg, entityKind, groupByEntityId: true, start: t.start, end: t.end }),
-                        });
-                        const totalsJson = await totalsRes.json().catch(() => ({}));
-                        const totalsRows = Array.isArray(totalsJson.data) ? totalsJson.data : [];
-                        for (const r of totalsRows) {
-                            const id = String(r.entityId || '');
-                            if (!id)
-                                continue;
-                            totalsByEntity.set(id, (totalsByEntity.get(id) || 0) + Number(r.value ?? 0));
+                setKpiValues((prev) => {
+                    const next = { ...prev };
+                    for (const w of kpis)
+                        next[w.key] = { loading: true };
+                    return next;
+                });
+                await Promise.all(kpis.map(async (w) => {
+                    try {
+                        // Optional non-metrics value source (e.g., project count from Projects API).
+                        const valueSource = w?.presentation?.valueSource;
+                        const metricKey = String(w?.query?.metricKey || '');
+                        const isProjectCount = metricKey === 'fp.projects.project_count';
+                        if (valueSource?.kind === 'api_count' || isProjectCount) {
+                            const endpoint = typeof valueSource?.endpoint === 'string' ? valueSource.endpoint : '/api/projects';
+                            const totalField = typeof valueSource?.totalField === 'string' ? valueSource.totalField : 'pagination.total';
+                            const sep = endpoint.includes('?') ? '&' : '?';
+                            const res = await fetch(`${endpoint}${sep}page=1&pageSize=1`);
+                            const json = await res.json().catch(() => ({}));
+                            const total = Array.isArray(json)
+                                ? json.length
+                                : Number(getByPath(json, totalField) ?? 0);
+                            setKpiValues((p) => ({ ...p, [w.key]: { loading: false, value: Number.isFinite(total) ? total : 0 } }));
+                            return;
                         }
-                    }
-                    const ranked = Array.from(totalsByEntity.entries())
-                        .map(([entityId, value]) => ({ entityId, value }))
-                        .sort((a, b) => b.value - a.value);
-                    const topIds = ranked.slice(0, topN).map((r) => r.entityId);
-                    const fetchedNames = spec.labelSource?.source === 'projects' ? await fetchProjectNames(topIds) : {};
-                    // 2) per-bucket series for top IDs: sum across metric keys
-                    const byEntity = new Map();
-                    const bucketsSet = new Set();
-                    const bucketIsoByT = new Map();
-                    for (const mk of metricKeys) {
-                        const seriesRes = await fetchWithAuth('/api/metrics/query', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ metricKey: mk, bucket, agg, entityKind, groupByEntityId: true, entityIds: topIds, start: t.start, end: t.end }),
-                        });
-                        const seriesJson = await seriesRes.json().catch(() => ({}));
-                        const seriesRows = Array.isArray(seriesJson.data) ? seriesJson.data : [];
-                        for (const r of seriesRows) {
-                            const id = String(r.entityId || '');
-                            const tt = r.bucket ? new Date(r.bucket).getTime() : NaN;
-                            if (!id || !Number.isFinite(tt))
-                                continue;
-                            bucketsSet.add(tt);
-                            if (typeof r.bucket === 'string' && !bucketIsoByT.has(tt))
-                                bucketIsoByT.set(tt, r.bucket);
-                            if (!byEntity.has(id))
-                                byEntity.set(id, new Map());
-                            byEntity.get(id).set(tt, (byEntity.get(id).get(tt) || 0) + Number(r.value ?? 0));
+                        // Generic non-metrics value source (extract a single numeric field from an endpoint).
+                        if (valueSource?.kind === 'api_value') {
+                            const endpoint = typeof valueSource?.endpoint === 'string' ? valueSource.endpoint : '';
+                            const valueField = typeof valueSource?.valueField === 'string' ? valueSource.valueField : '';
+                            if (!endpoint || !valueField) {
+                                setKpiValues((p) => ({ ...p, [w.key]: { loading: false, value: 0 } }));
+                                return;
+                            }
+                            const res = await fetchWithAuth(endpoint);
+                            const json = await res.json().catch(() => ({}));
+                            const raw = getByPath(json, valueField);
+                            const v = Number(raw ?? 0);
+                            setKpiValues((p) => ({ ...p, [w.key]: { loading: false, value: Number.isFinite(v) ? v : 0 } }));
+                            return;
                         }
-                    }
-                    const buckets = Array.from(bucketsSet.values()).sort((a, b) => a - b);
-                    // 3) optional "Other" = all entities minus top, computed via groupByEntityId across all entities
-                    let otherSeries = null;
-                    if (includeOther) {
-                        // compute blended total per bucket across all entities
-                        const totalByBucket = new Map();
-                        for (const mk of metricKeys) {
+                        // Sum the latest value per entity (useful for totals like wishlist_cumulative_total across projects).
+                        if (valueSource?.kind === 'metrics_sum_last_per_entity' && typeof valueSource.metricKey === 'string') {
+                            const t = effectiveTime(w); // usually null for all_time
+                            const body = {
+                                metricKey: String(valueSource.metricKey),
+                                bucket: 'none',
+                                agg: 'last',
+                                entityKind: typeof valueSource.entityKind === 'string' ? valueSource.entityKind : (w?.query?.entityKind || undefined),
+                                groupByEntityId: true,
+                            };
+                            if (t)
+                                Object.assign(body, t);
                             const res = await fetchWithAuth('/api/metrics/query', {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ metricKey: mk, bucket, agg, entityKind, groupByEntityId: true, start: t.start, end: t.end }),
+                                body: JSON.stringify(body),
                             });
                             const json = await res.json().catch(() => ({}));
+                            if (!res.ok)
+                                throw new Error(json?.error || `metrics/query ${res.status}`);
                             const rows = Array.isArray(json.data) ? json.data : [];
-                            for (const r of rows) {
+                            const sum = rows.reduce((acc, r) => acc + Number(r.value ?? 0), 0);
+                            setKpiValues((p) => ({ ...p, [w.key]: { loading: false, value: Number.isFinite(sum) ? sum : 0 } }));
+                            return;
+                        }
+                        // Generic aggregation per entity, then summed across entities.
+                        // Example: wishlist_net_change sum across all projects (all_time).
+                        if (valueSource?.kind === 'metrics_sum_agg_per_entity' && typeof valueSource.metricKey === 'string') {
+                            const t = effectiveTime(w);
+                            const agg = typeof valueSource.agg === 'string' ? valueSource.agg : 'sum';
+                            const body = {
+                                metricKey: String(valueSource.metricKey),
+                                bucket: 'none',
+                                agg,
+                                entityKind: typeof valueSource.entityKind === 'string' ? valueSource.entityKind : (w?.query?.entityKind || undefined),
+                                groupByEntityId: true,
+                            };
+                            if (t)
+                                Object.assign(body, t);
+                            const res = await fetchWithAuth('/api/metrics/query', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify(body),
+                            });
+                            const json = await res.json().catch(() => ({}));
+                            if (!res.ok)
+                                throw new Error(json?.error || `metrics/query ${res.status}`);
+                            const rows = Array.isArray(json.data) ? json.data : [];
+                            const sum = rows.reduce((acc, r) => acc + Number(r.value ?? 0), 0);
+                            setKpiValues((p) => ({ ...p, [w.key]: { loading: false, value: Number.isFinite(sum) ? sum : 0 } }));
+                            return;
+                        }
+                        // Sum of latest-per-entity across multiple metric keys (blended totals, e.g. followers across platforms).
+                        if (valueSource?.kind === 'metrics_sum_last_per_entity_multi' && Array.isArray(valueSource.metricKeys)) {
+                            const t = effectiveTime(w); // usually null for all_time
+                            const entityKind = typeof valueSource.entityKind === 'string' ? valueSource.entityKind : (w?.query?.entityKind || undefined);
+                            const keys = valueSource.metricKeys.map((x) => String(x || '').trim()).filter(Boolean);
+                            let sumAll = 0;
+                            for (const mk of keys) {
+                                const body = { metricKey: mk, bucket: 'none', agg: 'last', entityKind, groupByEntityId: true };
+                                if (t)
+                                    Object.assign(body, t);
+                                const res = await fetchWithAuth('/api/metrics/query', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+                                const json = await res.json().catch(() => ({}));
+                                if (!res.ok)
+                                    throw new Error(json?.error || `metrics/query ${res.status}`);
+                                const rows = Array.isArray(json.data) ? json.data : [];
+                                sumAll += rows.reduce((acc, r) => acc + Number(r.value ?? 0), 0);
+                            }
+                            setKpiValues((p) => ({ ...p, [w.key]: { loading: false, value: Number.isFinite(sumAll) ? sumAll : 0 } }));
+                            return;
+                        }
+                        const t = effectiveTime(w);
+                        const body = { ...(w.query || {}) };
+                        if (t)
+                            Object.assign(body, t);
+                        const res = await fetchWithAuth('/api/metrics/query', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+                        const json = await res.json().catch(() => ({}));
+                        if (!res.ok)
+                            throw new Error(json?.error || `metrics/query ${res.status}`);
+                        const rows = Array.isArray(json.data) ? json.data : [];
+                        const v = Number(rows[0]?.value ?? 0);
+                        let prev = undefined;
+                        if (t && w?.presentation?.compare === 'previous_period') {
+                            const start = new Date(t.start);
+                            const end = new Date(t.end);
+                            const dur = end.getTime() - start.getTime();
+                            const prevEnd = new Date(start.getTime() - 1);
+                            const prevStart = new Date(prevEnd.getTime() - dur);
+                            const prevBody = { ...(w.query || {}), start: prevStart.toISOString(), end: prevEnd.toISOString() };
+                            const r2 = await fetchWithAuth('/api/metrics/query', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(prevBody) });
+                            const j2 = await r2.json().catch(() => ({}));
+                            const rr = Array.isArray(j2.data) ? j2.data : [];
+                            prev = Number(rr[0]?.value ?? 0);
+                        }
+                        setKpiValues((p) => ({ ...p, [w.key]: { loading: false, value: Number.isFinite(v) ? v : 0, prev } }));
+                    }
+                    catch (err) {
+                        console.warn(`[Dashboard] KPI "${w.key}" failed:`, err);
+                        setKpiValues((p) => ({ ...p, [w.key]: { loading: false, value: 0, error: String(err) } }));
+                    }
+                }));
+            },
+            // Gauge (ratio/value vs max)
+            gauge: async () => {
+                const gauges = [...(widgetsByKind.gauge || []), ...(widgetsByKind.semi_gauge || [])];
+                if (!gauges.length)
+                    return;
+                setGaugeValues((prev) => {
+                    const next = { ...prev };
+                    for (const w of gauges)
+                        next[w.key] = { loading: true, value: prev[w.key]?.value, max: prev[w.key]?.max, min: prev[w.key]?.min };
+                    return next;
+                });
+                const fetchMetricValue = async (q, t) => {
+                    const body = { ...(q || {}) };
+                    const mk = typeof body.metricKey === 'string' ? body.metricKey.trim() : '';
+                    if (!mk)
+                        return 0;
+                    if (!body.bucket)
+                        body.bucket = 'none';
+                    if (!body.agg)
+                        body.agg = 'sum';
+                    if (t) {
+                        body.start = t.start;
+                        body.end = t.end;
+                    }
+                    const res = await fetchWithAuth('/api/metrics/query', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(body),
+                    });
+                    const json = await res.json().catch(() => ({}));
+                    if (!res.ok)
+                        throw new Error(json?.error || `metrics/query ${res.status}`);
+                    const rows = Array.isArray(json.data) ? json.data : [];
+                    const v = Number(rows[0]?.value ?? 0);
+                    return Number.isFinite(v) ? v : 0;
+                };
+                await Promise.all(gauges.map(async (w) => {
+                    try {
+                        const pres = w?.presentation || {};
+                        const t = effectiveTime(w);
+                        const min = Number.isFinite(Number(pres.min)) ? Number(pres.min) : 0;
+                        const value = await fetchMetricValue(w?.query, t);
+                        let max = undefined;
+                        if (pres?.maxQuery && typeof pres.maxQuery === 'object') {
+                            max = await fetchMetricValue(pres.maxQuery, t);
+                        }
+                        else if (Number.isFinite(Number(pres?.maxValue))) {
+                            max = Number(pres.maxValue);
+                        }
+                        else if (typeof pres?.maxMetricKey === 'string' && pres.maxMetricKey.trim()) {
+                            max = await fetchMetricValue({ metricKey: pres.maxMetricKey.trim() }, t);
+                        }
+                        if (!Number.isFinite(Number(max)))
+                            max = 0;
+                        setGaugeValues((p) => ({ ...p, [w.key]: { loading: false, value, max, min } }));
+                    }
+                    catch (err) {
+                        console.warn(`[Dashboard] Gauge "${w.key}" failed:`, err);
+                        setGaugeValues((p) => ({ ...p, [w.key]: { loading: false, value: 0, max: 0, min: 0 } }));
+                    }
+                }));
+            },
+            // Tabs (multi-option time series)
+            tabs: async () => {
+                const tabsWidgets = widgetsByKind.tabs || [];
+                if (!tabsWidgets.length)
+                    return;
+                setTabsData((prev) => {
+                    const next = { ...prev };
+                    for (const w of tabsWidgets)
+                        next[w.key] = { loading: true, tabs: prev[w.key]?.tabs || [] };
+                    return next;
+                });
+                await Promise.all(tabsWidgets.map(async (w) => {
+                    try {
+                        const t = effectiveTime(w) || range;
+                        const tabs = Array.isArray(w?.tabs) ? w.tabs : [];
+                        const outTabs = [];
+                        for (const tab of tabs) {
+                            const key = String(tab?.key || tab?.label || '').trim();
+                            if (!key)
+                                continue;
+                            const label = String(tab?.label || key);
+                            const icon = typeof tab?.icon === 'string' ? tab.icon : undefined;
+                            const pres = tab?.presentation || {};
+                            const format = (pres?.format === 'usd') ? 'usd' : 'number';
+                            const summaryLabel = typeof pres?.summaryLabel === 'string' ? pres.summaryLabel : undefined;
+                            const maxPoints = Math.max(3, Math.min(12, Number(pres?.maxPoints || 8)));
+                            const q = { ...(tab?.query || {}) };
+                            const bucket = String(q.bucket || pres?.bucket || 'day');
+                            q.bucket = bucket;
+                            q.agg = q.agg || 'sum';
+                            q.start = t.start;
+                            q.end = t.end;
+                            const res = await fetchWithAuth('/api/metrics/query', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify(q),
+                            });
+                            const json = await res.json().catch(() => ({}));
+                            if (!res.ok)
+                                throw new Error(json?.error || `metrics/query ${res.status}`);
+                            const rows = Array.isArray(json.data) ? json.data : [];
+                            const points = rows
+                                .map((r) => ({
+                                t: r.bucket ? new Date(r.bucket).getTime() : NaN,
+                                v: Number(r.value ?? 0),
+                                bucketIso: typeof r.bucket === 'string' ? r.bucket : undefined,
+                            }))
+                                .filter((p) => Number.isFinite(p.t))
+                                .sort((a, b) => a.t - b.t);
+                            const total = points.reduce((acc, p) => acc + Number(p.v ?? 0), 0);
+                            outTabs.push({ key, label, icon, bucket, total, points, format, summaryLabel, maxPoints });
+                        }
+                        setTabsData((p) => ({ ...p, [w.key]: { loading: false, tabs: outTabs } }));
+                    }
+                    catch (err) {
+                        console.warn(`[Dashboard] Tabs "${w.key}" failed:`, err);
+                        setTabsData((p) => ({ ...p, [w.key]: { loading: false, tabs: [] } }));
+                    }
+                }));
+            },
+            // Pie
+            pie: async () => {
+                const pies = widgetsByKind.pie || [];
+                if (!pies.length)
+                    return;
+                setPieSlices((prev) => {
+                    const next = { ...prev };
+                    for (const w of pies)
+                        next[w.key] = { loading: true, slices: prev[w.key]?.slices || [] };
+                    return next;
+                });
+                await Promise.all(pies.map(async (w) => {
+                    try {
+                        const block = normalizePieBlock({
+                            title: String(w.title || 'Pie'),
+                            format: (w?.presentation?.format === 'usd') ? 'usd' : 'number',
+                            time: w?.time === 'all_time' ? 'all_time' : 'inherit',
+                            query: { ...(w.query || {}) },
+                            groupByKey: String(w?.presentation?.groupByKey || 'region'),
+                            labelKey: String(w?.presentation?.labelKey || ''),
+                            rawKey: String(w?.presentation?.rawKey || ''),
+                            topN: Number(w?.presentation?.topN || 5),
+                            otherLabel: String(w?.presentation?.otherLabel || 'Other'),
+                        });
+                        const out = await runPieBlock({ block, timeRange: effectiveTime(w) });
+                        setPieSlices((p) => ({ ...p, [w.key]: { loading: false, slices: out.slices, otherLabel: out.otherLabel } }));
+                    }
+                    catch {
+                        setPieSlices((p) => ({ ...p, [w.key]: { loading: false, slices: [], otherLabel: String(w?.presentation?.otherLabel || 'Other') } }));
+                    }
+                }));
+            },
+            // API Pie (non-metrics grouped pies, e.g. CRM pipeline stage breakdown)
+            api_pie: async () => {
+                const apiPies = widgetsByKind.api_pie || [];
+                if (!apiPies.length)
+                    return;
+                setApiPieSlices((prev) => {
+                    const next = { ...prev };
+                    for (const w of apiPies)
+                        next[w.key] = { loading: true, slices: prev[w.key]?.slices || [] };
+                    return next;
+                });
+                await Promise.all(apiPies.map(async (w) => {
+                    try {
+                        const pres = w?.presentation || {};
+                        const endpoint = String(pres.endpoint || '').trim();
+                        if (!endpoint)
+                            throw new Error('Missing api_pie.presentation.endpoint');
+                        const res = await fetchWithAuth(endpoint);
+                        const json = await res.json().catch(() => ({}));
+                        if (!res.ok)
+                            throw new Error(json?.error || `api_pie fetch ${res.status}`);
+                        const itemsField = String(pres.itemsField || 'items');
+                        const labelField = String(pres.labelField || 'label');
+                        const valueField = String(pres.valueField || 'value');
+                        const rawField = String(pres.rawField || labelField);
+                        const hrefTemplate = typeof pres.hrefTemplate === 'string' ? pres.hrefTemplate : '';
+                        const topN = Math.max(1, Math.min(25, Number(pres.topN || 8) || 8));
+                        const otherLabel = String(pres.otherLabel || 'Other');
+                        const items = getByPath(json, itemsField);
+                        const arr = Array.isArray(items) ? items : [];
+                        const normalized = arr
+                            .map((it) => ({
+                            label: String(getByPath(it, labelField) ?? 'Unknown'),
+                            raw: getByPath(it, rawField),
+                            value: Number(getByPath(it, valueField) ?? 0),
+                            href: hrefTemplate ? applyTemplate(hrefTemplate, it) : '',
+                        }))
+                            .map((r) => ({ ...r, value: Number.isFinite(r.value) ? r.value : 0 }))
+                            .sort((a, b) => b.value - a.value);
+                        const top = normalized.slice(0, topN);
+                        const otherSum = normalized.slice(topN).reduce((acc, r) => acc + (Number.isFinite(r.value) ? r.value : 0), 0);
+                        const slices = [
+                            ...top.map((r, idx) => ({ ...r, color: palette(idx) })),
+                            ...(otherSum > 0 ? [{ label: otherLabel, raw: '__other__', value: otherSum, color: '#94a3b8', href: '' }] : []),
+                        ];
+                        setApiPieSlices((p) => ({ ...p, [w.key]: { loading: false, slices, otherLabel, error: undefined } }));
+                    }
+                    catch (e) {
+                        setApiPieSlices((p) => ({
+                            ...p,
+                            [w.key]: {
+                                loading: false,
+                                slices: [],
+                                otherLabel: String(w?.presentation?.otherLabel || 'Other'),
+                                error: String(e?.message || 'Failed to load'),
+                            },
+                        }));
+                    }
+                }));
+            },
+            // API Table (non-metrics tabular blocks, e.g. stalled opportunities)
+            api_table: async () => {
+                const apiTableWidgets = widgetsByKind.api_table || [];
+                if (!apiTableWidgets.length)
+                    return;
+                setApiTables((prev) => {
+                    const next = { ...prev };
+                    for (const w of apiTableWidgets)
+                        next[w.key] = { loading: true, rows: prev[w.key]?.rows || [], total: prev[w.key]?.total };
+                    return next;
+                });
+                await Promise.all(apiTableWidgets.map(async (w) => {
+                    try {
+                        const pres = w?.presentation || {};
+                        const endpoint = String(pres.endpoint || '').trim();
+                        if (!endpoint)
+                            throw new Error('Missing api_table.presentation.endpoint');
+                        const res = await fetchWithAuth(endpoint);
+                        const json = await res.json().catch(() => ({}));
+                        if (!res.ok)
+                            throw new Error(json?.error || `api_table fetch ${res.status}`);
+                        const itemsField = String(pres.itemsField || 'items');
+                        const totalField = typeof pres.totalField === 'string' ? pres.totalField : '';
+                        const rows = Array.isArray(getByPath(json, itemsField)) ? getByPath(json, itemsField) : [];
+                        const total = totalField ? Number(getByPath(json, totalField) ?? 0) : undefined;
+                        setApiTables((p) => ({ ...p, [w.key]: { loading: false, rows, total: (total != null && Number.isFinite(total)) ? total : undefined } }));
+                    }
+                    catch {
+                        setApiTables((p) => ({ ...p, [w.key]: { loading: false, rows: [], total: undefined } }));
+                    }
+                }));
+            },
+            // Metric Table (metrics drilldown rendered as a table; supports computed metrics too)
+            metric_table: async () => {
+                const metricTableWidgets = widgetsByKind.metric_table || [];
+                if (!metricTableWidgets.length)
+                    return;
+                setMetricTables((prev) => {
+                    const next = { ...prev };
+                    for (const w of metricTableWidgets)
+                        next[w.key] = { loading: true, rows: prev[w.key]?.rows || [], total: prev[w.key]?.total };
+                    return next;
+                });
+                await Promise.all(metricTableWidgets.map(async (w) => {
+                    try {
+                        const pres = w?.presentation || {};
+                        const pageSize = Math.max(1, Math.min(100, Number(pres.pageSize || 10) || 10));
+                        const t = effectiveTime(w);
+                        const q = { ...(w.query || {}) };
+                        // pointFilter: use query fields (metricKey + dims + params) and attach time range if present
+                        const pointFilter = {
+                            metricKey: String(q.metricKey || '').trim(),
+                        };
+                        if (!pointFilter.metricKey)
+                            throw new Error('Missing query.metricKey for metric_table');
+                        if (q.entityKind)
+                            pointFilter.entityKind = q.entityKind;
+                        if (q.entityId)
+                            pointFilter.entityId = q.entityId;
+                        if (Array.isArray(q.entityIds))
+                            pointFilter.entityIds = q.entityIds;
+                        if (q.dataSourceId)
+                            pointFilter.dataSourceId = q.dataSourceId;
+                        if (q.sourceGranularity)
+                            pointFilter.sourceGranularity = q.sourceGranularity;
+                        if (q.params && typeof q.params === 'object')
+                            pointFilter.params = q.params;
+                        if (q.dimensions && typeof q.dimensions === 'object')
+                            pointFilter.dimensions = q.dimensions;
+                        if (t) {
+                            pointFilter.start = t.start;
+                            pointFilter.end = t.end;
+                        }
+                        const res = await fetchWithAuth('/api/metrics/drilldown', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ pointFilter, page: 1, pageSize, includeContributors: false }),
+                        });
+                        const json = await res.json().catch(() => ({}));
+                        if (!res.ok)
+                            throw new Error(json?.error || `metrics/drilldown ${res.status}`);
+                        const points = Array.isArray(json?.points) ? json.points : [];
+                        const rows = points.map((p) => ({
+                            id: String(p?.entityId || p?.id || ''),
+                            date: p?.date,
+                            value: p?.value,
+                            entityKind: p?.entityKind,
+                            entityId: p?.entityId,
+                            dataSourceId: p?.dataSourceId,
+                            ...(p?.dimensions && typeof p.dimensions === 'object' ? p.dimensions : {}),
+                        }));
+                        const total = Number(json?.pagination?.total ?? rows.length);
+                        setMetricTables((p) => ({ ...p, [w.key]: { loading: false, rows, total: Number.isFinite(total) ? total : undefined } }));
+                    }
+                    catch {
+                        setMetricTables((p) => ({ ...p, [w.key]: { loading: false, rows: [], total: undefined } }));
+                    }
+                }));
+            },
+            // Line (multi series)
+            line: async () => {
+                const lines = widgetsByKind.line || [];
+                if (!lines.length) {
+                    setTimelineEvents([]);
+                    return;
+                }
+                setLineSeries((prev) => {
+                    const next = { ...prev };
+                    for (const w of lines)
+                        next[w.key] = { loading: true };
+                    return next;
+                });
+                await Promise.all(lines.map(async (w) => {
+                    try {
+                        const t = effectiveTime(w);
+                        if (!t)
+                            throw new Error('Line widgets require time range');
+                        const bucketOverride = lineBucketByWidgetKey[w.key];
+                        // Explicit series: [{ key, query }]
+                        if (Array.isArray(w.series) && w.series.length > 0) {
+                            const out = [];
+                            for (let i = 0; i < w.series.length; i++) {
+                                const s = w.series[i];
+                                const body = { ...(s.query || {}), start: t.start, end: t.end };
+                                const res = await fetchWithAuth('/api/metrics/query', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+                                const json = await res.json().catch(() => ({}));
+                                if (!res.ok)
+                                    throw new Error(json?.error || `metrics/query ${res.status}`);
+                                const rows = Array.isArray(json.data) ? json.data : [];
+                                const pts = rows
+                                    .map((r) => ({ t: r.bucket ? new Date(r.bucket).getTime() : NaN, v: Number(r.value ?? 0), bucketIso: typeof r.bucket === 'string' ? r.bucket : undefined }))
+                                    .filter((p) => Number.isFinite(p.t))
+                                    .sort((a, b) => a.t - b.t);
+                                out.push({
+                                    id: `explicit_${w.key}_${i}`,
+                                    label: String(s.key || `Series ${i + 1}`),
+                                    color: palette(i),
+                                    points: pts,
+                                    drill: { baseQuery: body, rowContextBase: {}, titlePrefix: String(w.title || 'Line') },
+                                });
+                            }
+                            setLineSeries((p) => ({ ...p, [w.key]: { loading: false, series: out } }));
+                            return;
+                        }
+                        // Computed top-N entities
+                        if (w.seriesSpec?.mode === 'top_n_entities') {
+                            const spec = w.seriesSpec;
+                            const metricKey = String(spec.metricKey || '');
+                            const entityKind = String(spec.entityKind || 'project');
+                            const bucket = String(bucketOverride || spec.bucket || 'day');
+                            const agg = String(spec.agg || 'sum');
+                            const topN = Number(spec.topN || 5);
+                            const includeOther = spec.includeOther !== false;
+                            const otherLabel = String(spec.otherLabel || 'Other');
+                            const cumulative = Boolean(spec.cumulative);
+                            // totals for ranking
+                            const totalsRes = await fetchWithAuth('/api/metrics/query', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ metricKey, bucket: 'none', agg, entityKind, groupByEntityId: true, start: t.start, end: t.end }),
+                            });
+                            const totalsJson = await totalsRes.json().catch(() => ({}));
+                            const totalsRows = Array.isArray(totalsJson.data) ? totalsJson.data : [];
+                            const ranked = totalsRows
+                                .map((r) => ({ entityId: String(r.entityId || ''), value: Number(r.value ?? 0) }))
+                                .filter((r) => r.entityId)
+                                .sort((a, b) => b.value - a.value);
+                            const topIds = ranked.slice(0, topN).map((r) => r.entityId);
+                            const fetchedNames = spec.labelSource?.source === 'projects' ? await fetchProjectNames(topIds) : {};
+                            // series for top ids
+                            const seriesRes = await fetchWithAuth('/api/metrics/query', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ metricKey, bucket, agg, entityKind, groupByEntityId: true, entityIds: topIds, start: t.start, end: t.end }),
+                            });
+                            const seriesJson = await seriesRes.json().catch(() => ({}));
+                            const seriesRows = Array.isArray(seriesJson.data) ? seriesJson.data : [];
+                            // total series (for other)
+                            const totalRes = await fetchWithAuth('/api/metrics/query', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ metricKey, bucket, agg, entityKind, start: t.start, end: t.end }),
+                            });
+                            const totalJson = await totalRes.json().catch(() => ({}));
+                            const totalRows = Array.isArray(totalJson.data) ? totalJson.data : [];
+                            const buckets = totalRows
+                                .map((r) => (r.bucket ? new Date(r.bucket).getTime() : NaN))
+                                .filter((x) => Number.isFinite(x))
+                                .sort((a, b) => a - b);
+                            const totalByT = new Map();
+                            const bucketIsoByT = new Map();
+                            for (const r of totalRows) {
                                 const tt = r.bucket ? new Date(r.bucket).getTime() : NaN;
                                 if (!Number.isFinite(tt))
                                     continue;
-                                totalByBucket.set(tt, (totalByBucket.get(tt) || 0) + Number(r.value ?? 0));
-                                if (typeof r.bucket === 'string' && !bucketIsoByT.has(tt))
+                                totalByT.set(tt, Number(r.value ?? 0));
+                                if (typeof r.bucket === 'string')
                                     bucketIsoByT.set(tt, r.bucket);
                             }
-                        }
-                        otherSeries = buckets.map((tt) => {
-                            const total = Number(totalByBucket.get(tt) ?? 0);
-                            const sumTop = topIds.reduce((acc, id) => acc + Number(byEntity.get(id)?.get(tt) ?? 0), 0);
-                            return { t: tt, v: Math.max(0, total - sumTop) };
-                        });
-                    }
-                    const otherIds = ranked.slice(topN).map((r) => r.entityId).filter(Boolean);
-                    const otherIdsLimited = otherIds.slice(0, 1000);
-                    const out = [];
-                    topIds.forEach((id, idx) => {
-                        const m = byEntity.get(id) || new Map();
-                        const label = spec.labelSource?.source === 'projects' ? (fetchedNames[id] || projectNames[id] || id) : id;
-                        out.push({
-                            id: `blend_${w.key}_${id}`,
-                            label,
-                            color: palette(idx),
-                            points: buckets.map((tt) => ({ t: tt, v: Number(m.get(tt) ?? 0), bucketIso: bucketIsoByT.get(tt) })),
-                            drillMenu: {
-                                titlePrefix: String(w.title || 'Line'),
-                                options: metricKeys.map((mk) => ({
-                                    label: mk,
-                                    baseQuery: { metricKey: mk, bucket, agg, entityKind, groupByEntityId: true, entityIds: topIds, start: t.start, end: t.end },
-                                    rowContextBase: { entityId: id },
-                                })),
-                            },
-                        });
-                    });
-                    if (includeOther && otherSeries) {
-                        out.push({
-                            id: `blend_other_${w.key}`,
-                            label: otherLabel,
-                            color: '#94a3b8',
-                            points: otherSeries.map((p) => ({ ...p, bucketIso: bucketIsoByT.get(p.t) })),
-                            drillMenu: {
-                                titlePrefix: String(w.title || 'Line'),
-                                options: metricKeys.map((mk) => ({
-                                    label: mk,
-                                    baseQuery: otherIdsLimited.length
-                                        ? { metricKey: mk, bucket, agg, entityKind, groupByEntityId: true, entityIds: otherIdsLimited, start: t.start, end: t.end }
-                                        : { metricKey: mk, bucket, agg, entityKind, groupByEntityId: true, start: t.start, end: t.end },
-                                    rowContextBase: {},
-                                })),
-                            },
-                        });
-                    }
-                    if (cumulative) {
-                        for (const s of out) {
-                            let acc = 0;
-                            s.points = s.points.map((p) => {
-                                acc += p.v;
-                                return { ...p, v: acc };
+                            const byEntity = new Map();
+                            for (const r of seriesRows) {
+                                const id = String(r.entityId || '');
+                                const tt = r.bucket ? new Date(r.bucket).getTime() : NaN;
+                                if (!id || !Number.isFinite(tt))
+                                    continue;
+                                if (!byEntity.has(id))
+                                    byEntity.set(id, new Map());
+                                byEntity.get(id).set(tt, Number(r.value ?? 0));
+                            }
+                            const baseQuery = { metricKey, bucket, agg, entityKind, groupByEntityId: true, entityIds: topIds, start: t.start, end: t.end };
+                            const out = [];
+                            topIds.forEach((id, idx) => {
+                                const m = byEntity.get(id) || new Map();
+                                const label = spec.labelSource?.source === 'projects' ? (fetchedNames[id] || projectNames[id] || id) : id;
+                                out.push({
+                                    id: `ent_${w.key}_${id}`,
+                                    label,
+                                    color: palette(idx),
+                                    points: buckets.map((tt) => ({ t: tt, v: Number(m.get(tt) ?? 0), bucketIso: bucketIsoByT.get(tt) })),
+                                    drill: { baseQuery, rowContextBase: { entityId: id }, titlePrefix: String(w.title || 'Line') },
+                                });
                             });
+                            if (includeOther) {
+                                // "Other" = all entities except topIds. We approximate by enumerating entityIds beyond topN when feasible.
+                                const otherIds = ranked.slice(topN).map((r) => r.entityId).filter(Boolean);
+                                const otherIdsLimited = otherIds.slice(0, 1000);
+                                const otherBaseQuery = otherIdsLimited.length
+                                    ? { metricKey, bucket, agg, entityKind, groupByEntityId: true, entityIds: otherIdsLimited, start: t.start, end: t.end }
+                                    : null;
+                                out.push({
+                                    id: `other_${w.key}`,
+                                    label: otherLabel,
+                                    color: '#94a3b8',
+                                    points: buckets.map((tt) => {
+                                        const total = Number(totalByT.get(tt) ?? 0);
+                                        const sumTop = topIds.reduce((acc, id) => acc + Number(byEntity.get(id)?.get(tt) ?? 0), 0);
+                                        return { t: tt, v: Math.max(0, total - sumTop), bucketIso: bucketIsoByT.get(tt) };
+                                    }),
+                                    drill: otherBaseQuery ? { baseQuery: otherBaseQuery, rowContextBase: {}, titlePrefix: String(w.title || 'Line') } : null,
+                                });
+                            }
+                            if (cumulative) {
+                                for (const s of out) {
+                                    let acc = 0;
+                                    s.points = s.points.map((p) => {
+                                        acc += p.v;
+                                        return { ...p, v: acc };
+                                    });
+                                }
+                            }
+                            setLineSeries((p) => ({ ...p, [w.key]: { loading: false, series: out } }));
+                            return;
                         }
+                        // Computed top-N entities from blended metrics (e.g. followers = sum of last across platforms)
+                        if (w.seriesSpec?.mode === 'top_n_entities_multi_metrics') {
+                            const spec = w.seriesSpec;
+                            const entityKind = String(spec.entityKind || 'project');
+                            const metricKeys = Array.isArray(spec.metricKeys) ? spec.metricKeys.map((x) => String(x || '').trim()).filter(Boolean) : [];
+                            const bucket = String(bucketOverride || spec.bucket || 'day');
+                            const agg = String(spec.agg || 'last');
+                            const topN = Number(spec.topN || 5);
+                            const includeOther = spec.includeOther !== false;
+                            const otherLabel = String(spec.otherLabel || 'Other');
+                            const cumulative = Boolean(spec.cumulative);
+                            // 1) totals by entityId across all metric keys for ranking
+                            const totalsByEntity = new Map();
+                            for (const mk of metricKeys) {
+                                const totalsRes = await fetchWithAuth('/api/metrics/query', {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ metricKey: mk, bucket: 'none', agg, entityKind, groupByEntityId: true, start: t.start, end: t.end }),
+                                });
+                                const totalsJson = await totalsRes.json().catch(() => ({}));
+                                const totalsRows = Array.isArray(totalsJson.data) ? totalsJson.data : [];
+                                for (const r of totalsRows) {
+                                    const id = String(r.entityId || '');
+                                    if (!id)
+                                        continue;
+                                    totalsByEntity.set(id, (totalsByEntity.get(id) || 0) + Number(r.value ?? 0));
+                                }
+                            }
+                            const ranked = Array.from(totalsByEntity.entries())
+                                .map(([entityId, value]) => ({ entityId, value }))
+                                .sort((a, b) => b.value - a.value);
+                            const topIds = ranked.slice(0, topN).map((r) => r.entityId);
+                            const fetchedNames = spec.labelSource?.source === 'projects' ? await fetchProjectNames(topIds) : {};
+                            // 2) per-bucket series for top IDs: sum across metric keys
+                            const byEntity = new Map();
+                            const bucketsSet = new Set();
+                            const bucketIsoByT = new Map();
+                            for (const mk of metricKeys) {
+                                const seriesRes = await fetchWithAuth('/api/metrics/query', {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ metricKey: mk, bucket, agg, entityKind, groupByEntityId: true, entityIds: topIds, start: t.start, end: t.end }),
+                                });
+                                const seriesJson = await seriesRes.json().catch(() => ({}));
+                                const seriesRows = Array.isArray(seriesJson.data) ? seriesJson.data : [];
+                                for (const r of seriesRows) {
+                                    const id = String(r.entityId || '');
+                                    const tt = r.bucket ? new Date(r.bucket).getTime() : NaN;
+                                    if (!id || !Number.isFinite(tt))
+                                        continue;
+                                    bucketsSet.add(tt);
+                                    if (typeof r.bucket === 'string' && !bucketIsoByT.has(tt))
+                                        bucketIsoByT.set(tt, r.bucket);
+                                    if (!byEntity.has(id))
+                                        byEntity.set(id, new Map());
+                                    byEntity.get(id).set(tt, (byEntity.get(id).get(tt) || 0) + Number(r.value ?? 0));
+                                }
+                            }
+                            const buckets = Array.from(bucketsSet.values()).sort((a, b) => a - b);
+                            // 3) optional "Other" = all entities minus top, computed via groupByEntityId across all entities
+                            let otherSeries = null;
+                            if (includeOther) {
+                                // compute blended total per bucket across all entities
+                                const totalByBucket = new Map();
+                                for (const mk of metricKeys) {
+                                    const res = await fetchWithAuth('/api/metrics/query', {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({ metricKey: mk, bucket, agg, entityKind, groupByEntityId: true, start: t.start, end: t.end }),
+                                    });
+                                    const json = await res.json().catch(() => ({}));
+                                    const rows = Array.isArray(json.data) ? json.data : [];
+                                    for (const r of rows) {
+                                        const tt = r.bucket ? new Date(r.bucket).getTime() : NaN;
+                                        if (!Number.isFinite(tt))
+                                            continue;
+                                        totalByBucket.set(tt, (totalByBucket.get(tt) || 0) + Number(r.value ?? 0));
+                                        if (typeof r.bucket === 'string' && !bucketIsoByT.has(tt))
+                                            bucketIsoByT.set(tt, r.bucket);
+                                    }
+                                }
+                                otherSeries = buckets.map((tt) => {
+                                    const total = Number(totalByBucket.get(tt) ?? 0);
+                                    const sumTop = topIds.reduce((acc, id) => acc + Number(byEntity.get(id)?.get(tt) ?? 0), 0);
+                                    return { t: tt, v: Math.max(0, total - sumTop) };
+                                });
+                            }
+                            const otherIds = ranked.slice(topN).map((r) => r.entityId).filter(Boolean);
+                            const otherIdsLimited = otherIds.slice(0, 1000);
+                            const out = [];
+                            topIds.forEach((id, idx) => {
+                                const m = byEntity.get(id) || new Map();
+                                const label = spec.labelSource?.source === 'projects' ? (fetchedNames[id] || projectNames[id] || id) : id;
+                                out.push({
+                                    id: `blend_${w.key}_${id}`,
+                                    label,
+                                    color: palette(idx),
+                                    points: buckets.map((tt) => ({ t: tt, v: Number(m.get(tt) ?? 0), bucketIso: bucketIsoByT.get(tt) })),
+                                    drillMenu: {
+                                        titlePrefix: String(w.title || 'Line'),
+                                        options: metricKeys.map((mk) => ({
+                                            label: mk,
+                                            baseQuery: { metricKey: mk, bucket, agg, entityKind, groupByEntityId: true, entityIds: topIds, start: t.start, end: t.end },
+                                            rowContextBase: { entityId: id },
+                                        })),
+                                    },
+                                });
+                            });
+                            if (includeOther && otherSeries) {
+                                out.push({
+                                    id: `blend_other_${w.key}`,
+                                    label: otherLabel,
+                                    color: '#94a3b8',
+                                    points: otherSeries.map((p) => ({ ...p, bucketIso: bucketIsoByT.get(p.t) })),
+                                    drillMenu: {
+                                        titlePrefix: String(w.title || 'Line'),
+                                        options: metricKeys.map((mk) => ({
+                                            label: mk,
+                                            baseQuery: otherIdsLimited.length
+                                                ? { metricKey: mk, bucket, agg, entityKind, groupByEntityId: true, entityIds: otherIdsLimited, start: t.start, end: t.end }
+                                                : { metricKey: mk, bucket, agg, entityKind, groupByEntityId: true, start: t.start, end: t.end },
+                                            rowContextBase: {},
+                                        })),
+                                    },
+                                });
+                            }
+                            if (cumulative) {
+                                for (const s of out) {
+                                    let acc = 0;
+                                    s.points = s.points.map((p) => {
+                                        acc += p.v;
+                                        return { ...p, v: acc };
+                                    });
+                                }
+                            }
+                            setLineSeries((p) => ({ ...p, [w.key]: { loading: false, series: out } }));
+                            return;
+                        }
+                        throw new Error('Unsupported line widget config');
                     }
-                    setLineSeries((p) => ({ ...p, [w.key]: { loading: false, series: out } }));
-                    return;
+                    catch {
+                        setLineSeries((p) => ({ ...p, [w.key]: { loading: false, series: [] } }));
+                    }
+                }));
+                // Timeline overlays (best-effort)
+                const needsTimeline = lines.some((w) => Boolean(w?.presentation?.timelineOverlay));
+                if (needsTimeline) {
+                    try {
+                        setTimelineLoading(true);
+                        const u = `/api/projects/activity/all?from=${encodeURIComponent(range.start)}&to=${encodeURIComponent(range.end)}`;
+                        const res = await fetch(u);
+                        const json = await res.json().catch(() => ({}));
+                        if (!res.ok)
+                            throw new Error(json?.error || `Failed (${res.status})`);
+                        const items = Array.isArray(json?.data) ? json.data : [];
+                        setTimelineEvents(items);
+                    }
+                    catch {
+                        setTimelineEvents([]);
+                    }
+                    finally {
+                        setTimelineLoading(false);
+                    }
                 }
-                throw new Error('Unsupported line widget config');
-            }
-            catch {
-                setLineSeries((p) => ({ ...p, [w.key]: { loading: false, series: [] } }));
-            }
-        }));
-        // Timeline overlays (best-effort)
-        const needsTimeline = lines.some((w) => Boolean(w?.presentation?.timelineOverlay));
-        if (needsTimeline) {
-            try {
-                setTimelineLoading(true);
-                const u = `/api/projects/activity/all?from=${encodeURIComponent(range.start)}&to=${encodeURIComponent(range.end)}`;
-                const res = await fetch(u);
-                const json = await res.json().catch(() => ({}));
-                if (!res.ok)
-                    throw new Error(json?.error || `Failed (${res.status})`);
-                const items = Array.isArray(json?.data) ? json.data : [];
-                setTimelineEvents(items);
-            }
-            catch {
-                setTimelineEvents([]);
-            }
-            finally {
-                setTimelineLoading(false);
-            }
-        }
-        else {
-            setTimelineEvents([]);
+                else {
+                    setTimelineEvents([]);
+                }
+            },
+        };
+        const loaderOrder = ['kpi_catalog', 'kpi', 'gauge', 'tabs', 'pie', 'api_pie', 'api_table', 'metric_table', 'line'];
+        for (const kind of loaderOrder) {
+            const loader = widgetLoaders[kind];
+            if (loader)
+                await loader();
         }
     }, [definition?.key, effectiveTime, range.start, range.end, resolveProjectNames, projectNames, lineBucketByWidgetKey]);
     React.useEffect(() => {
@@ -2139,6 +2351,491 @@ export function Dashboards(props = {}) {
         }
     };
     const widgetList = Array.isArray(definition?.definition?.widgets) ? definition.definition.widgets : [];
+    const renderKpiCatalogWidget = (w) => {
+        const st = kpiCatalogTotals[w.key];
+        const pres = w?.presentation || {};
+        const rawEntityKind = typeof pres?.entityKind === 'string' ? pres.entityKind.trim() : '';
+        const isAutoEntityKind = rawEntityKind === '' || rawEntityKind.toLowerCase() === 'auto';
+        const entityKind = !isAutoEntityKind ? rawEntityKind : '';
+        const onlyWithPoints = pres?.onlyWithPoints === true;
+        const ownerKind = typeof pres?.owner?.kind === 'string' ? pres.owner.kind.trim().toLowerCase() : '';
+        const ownerId = typeof pres?.owner?.id === 'string' ? pres.owner.id.trim() : '';
+        const hasOwnerFilter = Boolean(ownerKind && ownerId);
+        // Support filtering by entity kinds (metrics that support these entity kinds)
+        const filterEntityKinds = Array.isArray(pres?.filterEntityKinds)
+            ? pres.filterEntityKinds.map((x) => String(x || '').trim().toLowerCase()).filter(Boolean)
+            : [];
+        const hasEntityKindsFilter = filterEntityKinds.length > 0;
+        // Support filtering by category
+        const filterCategories = Array.isArray(pres?.filterCategories)
+            ? pres.filterCategories.map((x) => String(x || '').trim().toLowerCase()).filter(Boolean)
+            : [];
+        const hasCategories = filterCategories.length > 0;
+        const items = Object.values(catalogByKey || {});
+        const filtered = items
+            .filter((it) => {
+            // Filter by owner (e.g., only feature pack metrics)
+            if (hasOwnerFilter) {
+                const ik = typeof it?.owner?.kind === 'string' ? String(it.owner.kind).trim().toLowerCase() : '';
+                const iid = typeof it?.owner?.id === 'string' ? String(it.owner.id).trim() : '';
+                if (ik !== ownerKind || iid !== ownerId)
+                    return false;
+            }
+            // Filter by entity kinds (metrics that support any of these entity kinds)
+            if (hasEntityKindsFilter) {
+                const metricEntityKinds = Array.isArray(it.entity_kinds)
+                    ? it.entity_kinds.map((x) => String(x || '').trim().toLowerCase())
+                    : [];
+                const hasMatch = filterEntityKinds.some((ek) => metricEntityKinds.includes(ek));
+                if (!hasMatch)
+                    return false;
+            }
+            // Filter by category
+            if (hasCategories) {
+                const cat = typeof it.category === 'string' ? it.category.trim().toLowerCase() : '';
+                if (!filterCategories.includes(cat))
+                    return false;
+            }
+            // If entityKind is explicitly set (not auto), filter metrics that support it
+            if (!isAutoEntityKind) {
+                const kinds = Array.isArray(it.entity_kinds) ? it.entity_kinds : [];
+                // If the metric declares supported entity kinds, respect it.
+                // If it doesn't, we cannot safely assume it works for the chosen entityKind.
+                if (kinds.length === 0)
+                    return false;
+                if (!kinds.includes(entityKind))
+                    return false;
+            }
+            if (onlyWithPoints && Number(it.pointsCount || 0) <= 0)
+                return false;
+            return true;
+        })
+            .sort((a, b) => String(a.label || a.key).localeCompare(String(b.label || b.key)));
+        return (_jsx("div", { className: "span-12", children: _jsx(Card, { title: w.title || 'KPIs', children: _jsx("div", { style: { padding: 14 }, children: st?.loading ? (_jsx(Spinner, {})) : (_jsx("div", { className: "kpi-catalog-grid", children: filtered.map((it) => {
+                            const mk = it.key;
+                            const val = Number(st?.totalsByMetricKey?.[mk] ?? 0);
+                            const format = (it.unit === 'usd') ? 'usd' : 'number';
+                            const iconName = String(it.icon || fallbackIconForMetric(it.category) || '');
+                            const Icon = resolvePlatformIcon(iconName);
+                            const iconColor = String(it.icon_color || colors.accent.default);
+                            const t = effectiveTime(w);
+                            const ek = isAutoEntityKind ? pickEntityKindForMetric(it) : entityKind;
+                            const pf = { metricKey: mk };
+                            if (ek)
+                                pf.entityKind = ek;
+                            if (t) {
+                                pf.start = t.start;
+                                pf.end = t.end;
+                            }
+                            return (_jsxs("div", { className: "kpi-mini", style: {
+                                    border: `1px solid ${colors.border.subtle}`,
+                                    background: colors.bg.surface,
+                                    cursor: 'pointer',
+                                }, title: "Click to drill down", role: "button", tabIndex: 0, onClick: () => {
+                                    runDrillDescriptor({
+                                        kind: 'pointFilter',
+                                        pointFilter: pf,
+                                        title: `${String(w.title || 'KPIs')} • ${String(it.label || mk)}`,
+                                        format: format,
+                                    });
+                                }, onKeyDown: (e) => {
+                                    if (e.key !== 'Enter' && e.key !== ' ')
+                                        return;
+                                    e.preventDefault();
+                                    runDrillDescriptor({
+                                        kind: 'pointFilter',
+                                        pointFilter: pf,
+                                        title: `${String(w.title || 'KPIs')} • ${String(it.label || mk)}`,
+                                        format: format,
+                                    });
+                                }, children: [_jsxs("div", { className: "kpi-mini-top", children: [_jsxs("div", { style: { minWidth: 0 }, children: [_jsx("div", { className: "kpi-mini-title", title: mk, children: it.label || mk }), _jsx("div", { className: "kpi-mini-val", children: formatNumber(val, format) })] }), Icon ? (_jsx("div", { className: "kpi-icon", style: {
+                                                    width: 34,
+                                                    height: 34,
+                                                    borderRadius: radius.lg,
+                                                    border: `1px solid ${colors.border.subtle}`,
+                                                    background: colors.bg.muted,
+                                                    color: iconColor,
+                                                }, children: _jsx(Icon, { size: 18, style: { color: iconColor } }) })) : null] }), _jsx("div", { className: "kpi-mini-badges", children: it.category ? _jsx(Badge, { children: it.category }) : null })] }, mk));
+                        }) })) }) }) }, w.key));
+    };
+    const renderKpiWidget = (w, ctx) => {
+        const { spanClass, metricKey, fmt, cat } = ctx;
+        const st = kpiValues[w.key];
+        const val = Number(st?.value ?? 0);
+        const prev = typeof st?.prev === 'number' ? st.prev : null;
+        let pct = 0;
+        if (prev !== null && prev > 0)
+            pct = ((val - prev) / prev) * 100;
+        const iconName = String(w?.presentation?.icon || cat?.icon || '');
+        const Icon = resolvePlatformIcon(iconName);
+        const iconColor = String(w?.presentation?.iconColor || cat?.icon_color || colors.accent.default);
+        const action = w?.presentation?.action;
+        const t = effectiveTime(w);
+        const valueSource = w?.presentation?.valueSource;
+        const buildPointFilter = () => {
+            // 1) valueSource-driven metric KPIs
+            if (valueSource?.kind === 'metrics_sum_last_per_entity' && typeof valueSource.metricKey === 'string') {
+                const pf = { metricKey: String(valueSource.metricKey).trim() };
+                const ek = typeof valueSource.entityKind === 'string' ? valueSource.entityKind.trim() : (typeof w?.query?.entityKind === 'string' ? w.query.entityKind.trim() : '');
+                if (ek)
+                    pf.entityKind = ek;
+                if (t) {
+                    pf.start = t.start;
+                    pf.end = t.end;
+                }
+                return pf;
+            }
+            if (valueSource?.kind === 'metrics_sum_agg_per_entity' && typeof valueSource.metricKey === 'string') {
+                const pf = { metricKey: String(valueSource.metricKey).trim() };
+                const ek = typeof valueSource.entityKind === 'string' ? valueSource.entityKind.trim() : (typeof w?.query?.entityKind === 'string' ? w.query.entityKind.trim() : '');
+                if (ek)
+                    pf.entityKind = ek;
+                if (t) {
+                    pf.start = t.start;
+                    pf.end = t.end;
+                }
+                return pf;
+            }
+            // 2) direct metric query KPIs
+            const q = w?.query;
+            const mk = typeof q?.metricKey === 'string' ? q.metricKey.trim() : '';
+            if (!mk)
+                return null;
+            const pf = { metricKey: mk };
+            if (typeof q.entityKind === 'string' && q.entityKind.trim())
+                pf.entityKind = q.entityKind.trim();
+            if (typeof q.entityId === 'string' && q.entityId.trim())
+                pf.entityId = q.entityId.trim();
+            if (Array.isArray(q.entityIds)) {
+                const ids = q.entityIds.map((x) => String(x || '').trim()).filter(Boolean);
+                if (ids.length)
+                    pf.entityIds = ids;
+            }
+            if (typeof q.dataSourceId === 'string' && q.dataSourceId.trim())
+                pf.dataSourceId = q.dataSourceId.trim();
+            if (typeof q.sourceGranularity === 'string' && q.sourceGranularity.trim())
+                pf.sourceGranularity = q.sourceGranularity.trim();
+            if (q.params && typeof q.params === 'object')
+                pf.params = q.params;
+            if (q.dimensions && typeof q.dimensions === 'object')
+                pf.dimensions = q.dimensions;
+            if (t) {
+                pf.start = t.start;
+                pf.end = t.end;
+            }
+            return pf;
+        };
+        const drillPointFilter = buildPointFilter();
+        const drillMenu = valueSource?.kind === 'metrics_sum_last_per_entity_multi' && Array.isArray(valueSource.metricKeys)
+            ? valueSource.metricKeys.map((x) => String(x || '').trim()).filter(Boolean)
+            : [];
+        const canDrill = Boolean(drillPointFilter) || drillMenu.length > 0;
+        return (_jsx("div", { className: spanClass, children: _jsx(Card, { children: _jsxs("div", { className: "kpi", style: { cursor: canDrill ? 'pointer' : undefined }, title: canDrill ? 'Click to drill down' : undefined, role: canDrill ? 'button' : undefined, tabIndex: canDrill ? 0 : undefined, onClick: () => {
+                        if (drillMenu.length > 0) {
+                            openDrillMenu({
+                                title: `${String(w.title || cat?.label || metricKey || 'KPI')}`,
+                                format: fmt,
+                                options: drillMenu.map((mk) => {
+                                    const pf = { metricKey: mk };
+                                    const ek = typeof valueSource.entityKind === 'string' ? valueSource.entityKind.trim() : (typeof w?.query?.entityKind === 'string' ? w.query.entityKind.trim() : '');
+                                    if (ek)
+                                        pf.entityKind = ek;
+                                    if (t) {
+                                        pf.start = t.start;
+                                        pf.end = t.end;
+                                    }
+                                    return {
+                                        label: mk,
+                                        d: { kind: 'pointFilter', pointFilter: pf, title: `${String(w.title || 'KPI')} • ${mk}`, format: fmt },
+                                    };
+                                }),
+                            });
+                            return;
+                        }
+                        if (drillPointFilter) {
+                            runDrillDescriptor({
+                                kind: 'pointFilter',
+                                pointFilter: drillPointFilter,
+                                title: `${String(w.title || cat?.label || metricKey || 'KPI')}`,
+                                format: fmt,
+                            });
+                            return;
+                        }
+                        if (action?.href) {
+                            const href = String(action.href);
+                            openRouteDrill({ href, title: String(action?.label || w.title || cat?.label || metricKey || 'Details') });
+                        }
+                    }, onKeyDown: (e) => {
+                        if (!canDrill)
+                            return;
+                        if (e.key !== 'Enter' && e.key !== ' ')
+                            return;
+                        e.preventDefault();
+                        // Mirror click behavior
+                        if (drillMenu.length > 0) {
+                            openDrillMenu({
+                                title: `${String(w.title || cat?.label || metricKey || 'KPI')}`,
+                                format: fmt,
+                                options: drillMenu.map((mk) => {
+                                    const pf = { metricKey: mk };
+                                    const ek = typeof valueSource.entityKind === 'string' ? valueSource.entityKind.trim() : (typeof w?.query?.entityKind === 'string' ? w.query.entityKind.trim() : '');
+                                    if (ek)
+                                        pf.entityKind = ek;
+                                    if (t) {
+                                        pf.start = t.start;
+                                        pf.end = t.end;
+                                    }
+                                    return {
+                                        label: mk,
+                                        d: { kind: 'pointFilter', pointFilter: pf, title: `${String(w.title || 'KPI')} • ${mk}`, format: fmt },
+                                    };
+                                }),
+                            });
+                            return;
+                        }
+                        if (drillPointFilter) {
+                            runDrillDescriptor({
+                                kind: 'pointFilter',
+                                pointFilter: drillPointFilter,
+                                title: `${String(w.title || cat?.label || metricKey || 'KPI')}`,
+                                format: fmt,
+                            });
+                        }
+                    }, children: [_jsxs("div", { className: "kpi-head", children: [_jsxs("div", { children: [_jsx("div", { className: "kpi-title", children: w.title || cat?.label || metricKey }), _jsx("div", { className: "kpi-val", children: st?.loading ? '—' : formatNumber(val, fmt) })] }), Icon ? (_jsx("div", { className: "kpi-icon", style: {
+                                        borderRadius: radius.lg,
+                                        border: `1px solid ${colors.border.subtle}`,
+                                        background: colors.bg.muted,
+                                        color: iconColor,
+                                    }, children: _jsx(Icon, { size: 22, style: { color: iconColor } }) })) : null] }), prev !== null ? (_jsxs("div", { className: "kpi-delta", children: [_jsx("span", { style: { color: pct >= 0 ? '#22c55e' : '#ef4444' }, children: formatNumber(pct, 'percent') }), _jsx("span", { style: { opacity: 0.7 }, children: "vs previous period" })] })) : null, action?.href && action?.label ? (_jsx("a", { className: "kpi-action", href: String(action.href), onClick: (e) => {
+                                // Keep UX in-dashboard: open in the drill panel, not a full navigation.
+                                e.preventDefault();
+                                e.stopPropagation?.();
+                                openRouteDrill({ href: String(action.href), title: String(action.label) });
+                            }, children: String(action.label) })) : (_jsx("span", { className: "kpi-action kpi-action--placeholder", "aria-hidden": "true", children: "\u00A0" }))] }) }) }, w.key));
+    };
+    const renderGaugeWidget = (w, ctx) => {
+        const { spanClass, fmt } = ctx;
+        const st = gaugeValues[w.key];
+        const pres = w?.presentation || {};
+        const loading = !st || st?.loading;
+        const value = Number(st?.value ?? 0);
+        const max = Number(st?.max ?? 0);
+        const min = Number(st?.min ?? 0);
+        const range = Math.max(0, max - min);
+        const rawPct = range > 0 ? (value - min) / range : 0;
+        const pct = Math.max(0, Math.min(1, rawPct));
+        const fillPct = loading ? 0 : pct;
+        const pctLabel = `${Math.round(pct * 100)}%`;
+        const valueFormat = (pres?.valueFormat || pres?.format || fmt);
+        const maxFormat = (pres?.maxFormat || pres?.format || fmt);
+        const gaugeColor = String(pres?.color || colors.accent.default);
+        const valueLabel = String(pres?.valueLabel || 'Value');
+        const maxLabel = String(pres?.maxLabel || 'Max');
+        const showValues = pres?.showValues !== false;
+        return (_jsx("div", { className: spanClass, children: _jsx(Card, { children: _jsxs("div", { className: "gauge", children: [_jsx("div", { className: "gauge-track", style: {
+                                border: `1px solid ${colors.border.subtle}`,
+                                background: colors.bg.muted,
+                            }, children: _jsx("div", { className: "gauge-fill", style: {
+                                    height: `${fillPct * 100}%`,
+                                    background: gaugeColor,
+                                } }) }), _jsxs("div", { className: "gauge-content", children: [_jsx("div", { className: "gauge-title", children: w.title || 'Gauge' }), _jsx("div", { className: "gauge-value", children: loading ? '—' : pctLabel }), showValues ? (_jsx("div", { className: "gauge-sub", children: loading
+                                        ? 'Loading...'
+                                        : `${valueLabel}: ${formatNumber(value, valueFormat)} · ${maxLabel}: ${formatNumber(max, maxFormat)}` })) : null] })] }) }) }, w.key));
+    };
+    const renderSemiGaugeWidget = (w, ctx) => {
+        const { spanClass, fmt } = ctx;
+        const st = gaugeValues[w.key];
+        const pres = w?.presentation || {};
+        const loading = !st || st?.loading;
+        const value = Number(st?.value ?? 0);
+        const max = Number(st?.max ?? 0);
+        const min = Number(st?.min ?? 0);
+        const range = Math.max(0, max - min);
+        const rawPct = range > 0 ? (value - min) / range : 0;
+        const pct = Math.max(0, Math.min(1, rawPct));
+        const fillPct = loading ? 0 : pct;
+        const pctLabel = `${Math.round(pct * 100)}%`;
+        const valueFormat = (pres?.valueFormat || pres?.format || fmt);
+        const maxFormat = (pres?.maxFormat || pres?.format || fmt);
+        const gaugeColor = String(pres?.color || colors.accent.default);
+        const valueLabel = String(pres?.valueLabel || 'Value');
+        const maxLabel = String(pres?.maxLabel || 'Max');
+        const showValues = pres?.showValues !== false;
+        const r = 70;
+        const cx = 100;
+        const cy = 90;
+        // Arc opens upward: from left (cx-r, cy) to right (cx+r, cy) going through top (cx, cy-r)
+        // sweep-flag=0 (counterclockwise in SVG) draws the upper arc that curves upward
+        const arcPath = `M ${cx - r} ${cy} A ${r} ${r} 0 0 0 ${cx + r} ${cy}`;
+        const arcLength = Math.PI * r;
+        const dash = `${fillPct * arcLength} ${arcLength}`;
+        return (_jsx("div", { className: spanClass, children: _jsx(Card, { children: _jsxs("div", { className: "semi-gauge", children: [_jsxs("svg", { viewBox: "0 0 200 100", className: "semi-gauge-svg", "aria-hidden": "true", children: [_jsx("path", { d: arcPath, fill: "none", stroke: colors.border.subtle, strokeWidth: 14, strokeLinecap: "round" }), _jsx("path", { d: arcPath, fill: "none", stroke: gaugeColor, strokeWidth: 14, strokeLinecap: "round", strokeDasharray: dash })] }), _jsxs("div", { className: "semi-gauge-content", children: [_jsx("div", { className: "semi-gauge-title", children: w.title || 'Gauge' }), _jsx("div", { className: "semi-gauge-value", children: loading ? '—' : pctLabel }), showValues ? (_jsx("div", { className: "semi-gauge-sub", children: loading
+                                        ? 'Loading...'
+                                        : `${valueLabel}: ${formatNumber(value, valueFormat)} · ${maxLabel}: ${formatNumber(max, maxFormat)}` })) : null] })] }) }) }, w.key));
+    };
+    const renderTabsWidget = (w, ctx) => {
+        const { spanClass } = ctx;
+        const st = tabsData[w.key];
+        const tabs = Array.isArray(st?.tabs) ? st.tabs : [];
+        const defaultKey = tabs[0]?.key || '';
+        const activeKey = tabsActiveByWidget[w.key] || defaultKey;
+        const active = tabs.find((t) => t.key === activeKey) || tabs[0];
+        const points = active?.points || [];
+        const maxPoints = Math.max(3, Math.min(12, Number(active?.maxPoints || 8)));
+        const trimmed = points.slice(-maxPoints);
+        const maxVal = trimmed.reduce((acc, p) => Math.max(acc, Number(p.v ?? 0)), 0);
+        return (_jsx("div", { className: spanClass, children: _jsx(Card, { title: w.title || 'Details', children: _jsxs("div", { className: "tabs-widget", children: [_jsx("div", { className: "tabs-row", children: tabs.map((t) => {
+                                const isActive = t.key === activeKey;
+                                const TabIcon = resolvePlatformIcon(t.icon || '');
+                                return (_jsxs("button", { type: "button", className: `tabs-tab${isActive ? ' tabs-tab--active' : ''}`, onClick: () => setTabsActiveByWidget((p) => ({ ...p, [w.key]: t.key })), children: [TabIcon ? _jsx(TabIcon, { size: 16 }) : null, _jsx("span", { children: t.label })] }, t.key));
+                            }) }), _jsxs("div", { className: "tabs-summary", children: [_jsx("div", { className: "tabs-summary-label", children: active?.summaryLabel || 'Total' }), _jsx("div", { className: "tabs-summary-value", children: st?.loading ? '—' : formatNumber(Number(active?.total ?? 0), active?.format || 'number') })] }), _jsxs("div", { className: "tabs-chart", children: [trimmed.map((p, idx) => {
+                                    const v = Number(p.v ?? 0);
+                                    // Calculate height as percentage of 80px container (min 6px for visibility)
+                                    const hPx = maxVal > 0 ? Math.max(6, Math.round((v / maxVal) * 80)) : 6;
+                                    const label = formatBucketLabel(active?.bucket || 'day', p.bucketIso);
+                                    return (_jsxs("div", { className: "tabs-bar-wrap", children: [_jsx("div", { className: "tabs-bar-container", children: _jsx("div", { className: "tabs-bar", style: { height: `${hPx}px` } }) }), _jsx("div", { className: "tabs-bar-value", children: v > 0 ? formatNumber(v, active?.format || 'number') : '' }), _jsx("div", { className: "tabs-bar-label", children: label })] }, `${active?.key || 'tab'}_${idx}`));
+                                }), trimmed.length === 0 ? (_jsx("div", { className: "tabs-empty", children: "No data" })) : null] })] }) }) }, w.key));
+    };
+    const renderPieWidget = (w, ctx) => {
+        const { spanClass, fmt } = ctx;
+        const st = pieSlices[w.key];
+        const slices = Array.isArray(st?.slices) ? st?.slices : [];
+        const otherLabel = String(st?.otherLabel || w?.presentation?.otherLabel || 'Other');
+        const onSliceClick = async (slice) => {
+            const drill = slice?.drill;
+            if (!drill || !drill.pointFilter)
+                return;
+            await runDrilldown({ pointFilter: drill.pointFilter, title: drill.title, format: drill.format, page: 1 });
+        };
+        return (_jsx("div", { className: spanClass, children: _jsx(Card, { title: w.title || 'Pie', children: _jsxs("div", { style: { padding: 14 }, children: [!st || st?.loading ? _jsx(Spinner, {}) : _jsx(Donut, { slices: slices, format: fmt, onSliceClick: onSliceClick }), st && !st?.loading && slices.some((s) => s?.raw === '__other__') ? (_jsxs("div", { style: { marginTop: 10, fontSize: 12, color: colors.text.muted }, children: ["Tip: \"", otherLabel, "\" is an aggregate bucket; drilldown is available on named slices only (for now)."] })) : null] }) }) }, w.key));
+    };
+    const renderApiPieWidget = (w, ctx) => {
+        const { spanClass } = ctx;
+        const st = apiPieSlices[w.key];
+        const slices = Array.isArray(st?.slices) ? st?.slices : [];
+        const otherLabel = String(st?.otherLabel || w?.presentation?.otherLabel || 'Other');
+        const format = (w?.presentation?.format === 'usd') ? 'usd' : 'number';
+        const error = typeof st?.error === 'string' ? st.error : '';
+        const onSliceClick = async (slice) => {
+            const href = typeof slice?.href === 'string' ? slice.href : '';
+            if (!href)
+                return;
+            openRouteDrill({ href, title: `${String(w.title || 'Chart')} • ${String(slice?.label || '')}`.trim() });
+        };
+        return (_jsx("div", { className: spanClass, children: _jsx(Card, { title: w.title || 'Pie', children: _jsxs("div", { style: { padding: 14 }, children: [!st || st?.loading ? _jsx(Spinner, {}) : (error ? (_jsx("div", { style: { display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: 240 }, children: _jsxs("div", { style: { fontSize: 13, color: colors.text.muted, textAlign: 'center', maxWidth: 520 }, children: [_jsx("div", { style: { fontWeight: 600, color: colors.text.primary, marginBottom: 6 }, children: "Could not load chart" }), _jsx("div", { children: error }), _jsxs("div", { style: { marginTop: 8, fontSize: 12 }, children: ["Tip: open ", _jsx("code", { children: "/api/crm/reports/pipeline-health" }), " in a new tab to see the raw response."] })] }) })) : (_jsx(Donut, { slices: slices, format: format, onSliceClick: onSliceClick }))), st && !st?.loading && slices.some((s) => s?.raw === '__other__') ? (_jsxs("div", { style: { marginTop: 10, fontSize: 12, color: colors.text.muted }, children: ["Tip: \"", otherLabel, "\" is an aggregate bucket; click named slices to open filtered lists."] })) : null] }) }) }, w.key));
+    };
+    const renderApiTableWidget = (w, ctx) => {
+        const { spanClass } = ctx;
+        const st = apiTables[w.key];
+        const rows = Array.isArray(st?.rows) ? st?.rows : [];
+        const pres = w?.presentation || {};
+        const cols = Array.isArray(pres.columns) ? pres.columns : [];
+        const rowHrefTemplate = typeof pres.rowHrefTemplate === 'string' ? pres.rowHrefTemplate : '';
+        const renderCell = (row, col) => {
+            const field = String(col?.field || '').trim();
+            const label = String(col?.label || field || '');
+            const fmt = String(col?.format || '').toLowerCase();
+            const raw = field ? getByPath(row, field) : undefined;
+            if (fmt === 'usd')
+                return formatNumber(Number(raw ?? 0), 'usd');
+            if (fmt === 'number')
+                return formatNumber(Number(raw ?? 0), 'number');
+            if (fmt === 'datetime' || fmt === 'date') {
+                if (!raw)
+                    return '—';
+                const d = new Date(String(raw));
+                if (!Number.isFinite(d.getTime()))
+                    return String(raw);
+                return fmt === 'date' ? d.toLocaleDateString() : d.toLocaleString();
+            }
+            return raw == null ? '—' : String(raw);
+        };
+        return (_jsx("div", { className: spanClass, children: _jsx(Card, { title: w.title || 'Table', children: _jsx("div", { style: { padding: 14 }, children: st?.loading ? _jsx(Spinner, {}) : (_jsxs(_Fragment, { children: [_jsxs("div", { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }, children: [_jsx("div", { style: { fontSize: 12, color: colors.text.muted }, children: typeof st?.total === 'number' ? `${st.total.toLocaleString()} total` : `${rows.length.toLocaleString()} rows` }), rowHrefTemplate ? _jsx(Badge, { variant: "info", children: "click row to open" }) : null] }), _jsx("div", { style: { overflowX: 'auto', border: `1px solid ${colors.border.subtle}`, borderRadius: 10 }, children: _jsxs("table", { style: { width: '100%', borderCollapse: 'collapse', fontSize: 12 }, children: [_jsx("thead", { children: _jsx("tr", { style: { textAlign: 'left', background: colors.bg.muted }, children: cols.map((c, idx) => (_jsx("th", { style: { padding: '8px 10px' }, children: String(c?.label || c?.field || '') }, idx))) }) }), _jsxs("tbody", { children: [rows.map((r, idx) => {
+                                                    const href = rowHrefTemplate ? applyTemplate(rowHrefTemplate, r) : '';
+                                                    return (_jsx("tr", { style: { borderTop: `1px solid ${colors.border.subtle}`, cursor: href ? 'pointer' : 'default' }, onClick: () => {
+                                                            if (!href)
+                                                                return;
+                                                            openRouteDrill({ href, title: `${String(w.title || 'Table')} • ${String(r?.name || r?.id || '')}`.trim() });
+                                                        }, children: cols.map((c, j) => (_jsx("td", { style: { padding: '8px 10px', whiteSpace: 'nowrap' }, children: j === 0 && href ? (_jsx("a", { href: href, style: { color: colors.accent.default, textDecoration: 'none' }, onClick: (e) => {
+                                                                    e.preventDefault();
+                                                                    e.stopPropagation?.();
+                                                                    openRouteDrill({ href, title: `${String(w.title || 'Table')} • ${String(r?.name || r?.id || '')}`.trim() });
+                                                                }, children: renderCell(r, c) })) : renderCell(r, c) }, j))) }, String(r?.id || idx)));
+                                                }), rows.length === 0 ? (_jsx("tr", { children: _jsx("td", { colSpan: Math.max(1, cols.length), style: { padding: '10px', color: colors.text.muted }, children: "No rows" }) })) : null] })] }) })] })) }) }) }, w.key));
+    };
+    const renderMetricTableWidget = (w, ctx) => {
+        const { spanClass } = ctx;
+        const st = metricTables[w.key];
+        const rows = Array.isArray(st?.rows) ? st?.rows : [];
+        const pres = w?.presentation || {};
+        const cols = Array.isArray(pres.columns) ? pres.columns : [];
+        const rowHrefTemplate = typeof pres.rowHrefTemplate === 'string' ? pres.rowHrefTemplate : '';
+        const renderCell = (row, col) => {
+            const field = String(col?.field || '').trim();
+            const fmt = String(col?.format || '').toLowerCase();
+            const raw = field ? getByPath(row, field) : undefined;
+            if (fmt === 'usd')
+                return formatNumber(Number(raw ?? 0), 'usd');
+            if (fmt === 'number')
+                return formatNumber(Number(raw ?? 0), 'number');
+            if (fmt === 'datetime' || fmt === 'date') {
+                if (!raw)
+                    return '—';
+                const d = new Date(String(raw));
+                if (!Number.isFinite(d.getTime()))
+                    return String(raw);
+                return fmt === 'date' ? d.toLocaleDateString() : d.toLocaleString();
+            }
+            return raw == null ? '—' : String(raw);
+        };
+        return (_jsx("div", { className: spanClass, children: _jsx(Card, { title: w.title || 'Table', children: _jsx("div", { style: { padding: 14 }, children: st?.loading ? _jsx(Spinner, {}) : (_jsxs(_Fragment, { children: [_jsxs("div", { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }, children: [_jsx("div", { style: { fontSize: 12, color: colors.text.muted }, children: typeof st?.total === 'number' ? `${st.total.toLocaleString()} total` : `${rows.length.toLocaleString()} rows` }), rowHrefTemplate ? _jsx(Badge, { variant: "info", children: "click row to open" }) : null] }), _jsx("div", { style: { overflowX: 'auto', border: `1px solid ${colors.border.subtle}`, borderRadius: 10 }, children: _jsxs("table", { style: { width: '100%', borderCollapse: 'collapse', fontSize: 12 }, children: [_jsx("thead", { children: _jsx("tr", { style: { textAlign: 'left', background: colors.bg.muted }, children: cols.map((c, idx) => (_jsx("th", { style: { padding: '8px 10px' }, children: String(c?.label || c?.field || '') }, idx))) }) }), _jsxs("tbody", { children: [rows.map((r, idx) => {
+                                                    const href = rowHrefTemplate ? applyTemplate(rowHrefTemplate, r) : '';
+                                                    return (_jsx("tr", { style: { borderTop: `1px solid ${colors.border.subtle}`, cursor: href ? 'pointer' : 'default' }, onClick: () => {
+                                                            if (!href)
+                                                                return;
+                                                            openRouteDrill({ href, title: `${String(w.title || 'Table')} • ${String(r?.name || r?.id || '')}`.trim() });
+                                                        }, children: cols.map((c, j) => (_jsx("td", { style: { padding: '8px 10px', whiteSpace: 'nowrap' }, children: j === 0 && href ? (_jsx("a", { href: href, style: { color: colors.accent.default, textDecoration: 'none' }, onClick: (e) => {
+                                                                    e.preventDefault();
+                                                                    e.stopPropagation?.();
+                                                                    openRouteDrill({ href, title: `${String(w.title || 'Table')} • ${String(r?.name || r?.id || '')}`.trim() });
+                                                                }, children: renderCell(r, c) })) : renderCell(r, c) }, j))) }, String(r?.id || idx)));
+                                                }), rows.length === 0 ? (_jsx("tr", { children: _jsx("td", { colSpan: Math.max(1, cols.length), style: { padding: '10px', color: colors.text.muted }, children: "No rows" }) })) : null] })] }) })] })) }) }) }, w.key));
+    };
+    const renderLineWidget = (w, ctx) => {
+        const { spanClass, fmt } = ctx;
+        const st = lineSeries[w.key];
+        const series = st?.series || [];
+        const currentBucket = (lineBucketByWidgetKey[w.key] || w?.seriesSpec?.bucket || 'day');
+        const overlayEnabled = Boolean(w?.presentation?.timelineOverlay);
+        const bucketControl = (_jsx(Select, { value: currentBucket, onChange: (v) => setLineBucketByWidgetKey((p) => ({ ...p, [w.key]: selectValue(v) })), options: [
+                { value: 'day', label: 'Daily' },
+                { value: 'week', label: 'Weekly' },
+                { value: 'month', label: 'Monthly' },
+            ] }));
+        return (_jsx("div", { className: spanClass, children: st?.loading ? (_jsx(Card, { title: w.title || 'Line', children: _jsx("div", { style: { padding: 18 }, children: _jsx(Spinner, {}) }) })) : (_jsx(MultiLineChart, { title: w.title || 'Line', format: fmt, series: series, bucket: currentBucket, bucketControl: bucketControl, timelineOverlay: overlayEnabled, timelineEvents: overlayEnabled ? timelineEvents : [], onDrill: (d) => runDrillDescriptor(d), onDrillMenu: (args) => openDrillMenu(args) })) }, w.key));
+    };
+    const widgetRenderers = {
+        kpi_catalog: renderKpiCatalogWidget,
+        kpi: renderKpiWidget,
+        gauge: renderGaugeWidget,
+        semi_gauge: renderSemiGaugeWidget,
+        tabs: renderTabsWidget,
+        pie: renderPieWidget,
+        api_pie: renderApiPieWidget,
+        api_table: renderApiTableWidget,
+        metric_table: renderMetricTableWidget,
+        line: renderLineWidget,
+    };
+    const renderWidget = (w) => {
+        const metricKey = String(w?.query?.metricKey || w?.series?.[0]?.query?.metricKey || w?.seriesSpec?.metricKey || '');
+        const cat = metricKey ? catalogByKey[metricKey] : undefined;
+        const fmt = (w?.presentation?.format === 'usd' || cat?.unit === 'usd') ? 'usd' : 'number';
+        const spanClass = resolveWidgetSpanClass(w);
+        const renderer = widgetRenderers[w.kind];
+        if (renderer)
+            return renderer(w, { spanClass, metricKey, fmt, cat });
+        return (_jsx("div", { className: spanClass, children: _jsx(Card, { title: w.title || w.kind, children: _jsxs("div", { style: { padding: 14, opacity: 0.75, fontSize: 12 }, children: ["Unsupported widget kind: ", String(w.kind)] }) }) }, w.key));
+    };
     return (_jsxs(Page, { title: "Dashboards", children: [_jsx("style", { children: `
         .wrap {
           padding: 20px;
@@ -2201,6 +2898,60 @@ export function Dashboards(props = {}) {
         .kpi-mini-title { font-size: 12px; opacity: 0.82; line-height: 1.2; }
         .kpi-mini-val { font-size: 20px; font-weight: 800; letter-spacing: -0.02em; }
         .kpi-mini-badges { display: flex; gap: 6px; flex-wrap: wrap; }
+        .gauge { padding: 14px; display: grid; grid-template-columns: 46px 1fr; gap: 14px; align-items: center; }
+        .gauge-track { height: 120px; width: 46px; border-radius: 999px; position: relative; overflow: hidden; }
+        .gauge-fill { position: absolute; bottom: 0; left: 0; right: 0; border-radius: 999px; }
+        .gauge-content { display: flex; flex-direction: column; gap: 6px; }
+        .gauge-title { font-size: 12px; opacity: 0.75; }
+        .gauge-value { font-size: 26px; font-weight: 800; letter-spacing: -0.02em; }
+        .gauge-sub { font-size: 12px; opacity: 0.75; }
+        .semi-gauge { padding: 14px; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+        .semi-gauge-svg { width: 100%; max-width: 180px; height: auto; aspect-ratio: 2 / 1; margin: 0 auto; display: block; overflow: visible; }
+        .semi-gauge-content { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 4px; }
+        .semi-gauge-title { font-size: 12px; opacity: 0.75; }
+        .semi-gauge-value { font-size: 26px; font-weight: 800; letter-spacing: -0.02em; }
+        .semi-gauge-sub { font-size: 12px; opacity: 0.75; }
+        .tabs-widget { display: flex; flex-direction: column; gap: 12px; }
+        .tabs-row { display: flex; gap: 10px; flex-wrap: wrap; }
+        .tabs-tab {
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          padding: 8px 12px;
+          border-radius: 12px;
+          border: 1px solid ${colors.border.subtle};
+          background: ${colors.bg.muted};
+          font-size: 12px;
+          color: ${colors.text.primary};
+          cursor: pointer;
+        }
+        .tabs-tab--active {
+          background: ${colors.bg.surface};
+          border-color: ${colors.border.strong};
+          box-shadow: 0 8px 20px rgba(0,0,0,0.16);
+        }
+        .tabs-summary { display: flex; flex-direction: column; gap: 4px; }
+        .tabs-summary-label { font-size: 12px; opacity: 0.7; }
+        .tabs-summary-value { font-size: 28px; font-weight: 800; letter-spacing: -0.02em; }
+        .tabs-chart {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(44px, 1fr));
+          gap: 10px;
+          align-items: end;
+          min-height: 110px;
+        }
+        .tabs-bar-wrap { display: flex; flex-direction: column; align-items: center; gap: 6px; width: 100%; }
+        .tabs-bar-container { height: 80px; width: 100%; display: flex; align-items: flex-end; justify-content: center; }
+        .tabs-bar {
+          width: 100%;
+          max-width: 44px;
+          min-height: 6px;
+          border-radius: 999px;
+          background: ${colors.accent.default};
+        }
+        .tabs-bar-value { font-size: 11px; opacity: 0.75; min-height: 12px; }
+        .tabs-bar-label { font-size: 11px; opacity: 0.7; text-align: center; }
+        .tabs-empty { font-size: 12px; opacity: 0.7; grid-column: 1 / -1; }
         .donut-wrap { display: grid; grid-template-columns: 260px 1fr; gap: 14px; align-items: center; }
         @media (max-width: 900px) { .donut-wrap { grid-template-columns: 1fr; } }
         .donut { width: 100%; height: 240px; }
@@ -2230,389 +2981,7 @@ export function Dashboards(props = {}) {
                                             { value: 'month_to_date', label: 'Month to date' },
                                             { value: 'year_to_date', label: 'Year to date' },
                                             { value: 'custom', label: 'Custom' },
-                                        ] }), preset === 'custom' ? (_jsxs(_Fragment, { children: [_jsx(Input, { type: "date", value: customStart, onChange: (e) => setCustomStart(e.target.value) }), _jsx(Input, { type: "date", value: customEnd, onChange: (e) => setCustomEnd(e.target.value) })] })) : null, _jsx(Button, { onClick: () => queryMetrics(), disabled: loadingDash, children: "Refresh" }), definition && definition.canEdit ? (_jsx(Button, { variant: "secondary", onClick: openShares, children: "Share" })) : null] })] }), _jsx("div", { className: "subtitle", children: definition?.description || '—' }), error ? _jsx("div", { style: { color: '#ef4444', fontSize: 13 }, children: error }) : null, _jsxs("div", { className: "grid", children: [loadingDash && !definition ? (_jsx("div", { className: "span-12", children: _jsx(Card, { children: _jsx("div", { style: { padding: 18 }, children: _jsx(Spinner, {}) }) }) })) : null, loadingDash && definition ? (_jsx("div", { className: "span-12", style: { opacity: 0.9 }, children: _jsxs("div", { style: { display: 'flex', alignItems: 'center', gap: 10, padding: '6px 2px' }, children: [_jsx(Spinner, {}), _jsx("span", { style: { fontSize: 13, color: colors.text.muted }, children: "Loading dashboard\u2026" })] }) })) : null, definition ? (widgetList.map((w) => {
-                                const grid = w.grid || {};
-                                const span = typeof grid.w === 'number' ? grid.w : (w.kind === 'kpi' ? 3 : (w.kind === 'pie' || w.kind === 'api_pie') ? 6 : 12);
-                                const spanClass = span === 12 ? 'span-12' : span === 6 ? 'span-6' : span === 4 ? 'span-4' : 'span-3';
-                                const metricKey = String(w?.query?.metricKey || w?.series?.[0]?.query?.metricKey || w?.seriesSpec?.metricKey || '');
-                                const cat = metricKey ? catalogByKey[metricKey] : undefined;
-                                const fmt = (w?.presentation?.format === 'usd' || cat?.unit === 'usd') ? 'usd' : 'number';
-                                if (w.kind === 'kpi_catalog') {
-                                    const st = kpiCatalogTotals[w.key];
-                                    const pres = w?.presentation || {};
-                                    const rawEntityKind = typeof pres?.entityKind === 'string' ? pres.entityKind.trim() : '';
-                                    const isAutoEntityKind = rawEntityKind === '' || rawEntityKind.toLowerCase() === 'auto';
-                                    const entityKind = !isAutoEntityKind ? rawEntityKind : '';
-                                    const onlyWithPoints = pres?.onlyWithPoints === true;
-                                    const ownerKind = typeof pres?.owner?.kind === 'string' ? pres.owner.kind.trim().toLowerCase() : '';
-                                    const ownerId = typeof pres?.owner?.id === 'string' ? pres.owner.id.trim() : '';
-                                    const hasOwnerFilter = Boolean(ownerKind && ownerId);
-                                    // Support filtering by entity kinds (metrics that support these entity kinds)
-                                    const filterEntityKinds = Array.isArray(pres?.filterEntityKinds)
-                                        ? pres.filterEntityKinds.map((x) => String(x || '').trim().toLowerCase()).filter(Boolean)
-                                        : [];
-                                    const hasEntityKindsFilter = filterEntityKinds.length > 0;
-                                    // Support filtering by category
-                                    const filterCategories = Array.isArray(pres?.filterCategories)
-                                        ? pres.filterCategories.map((x) => String(x || '').trim().toLowerCase()).filter(Boolean)
-                                        : [];
-                                    const hasCategories = filterCategories.length > 0;
-                                    const items = Object.values(catalogByKey || {});
-                                    const filtered = items
-                                        .filter((it) => {
-                                        // Filter by owner (e.g., only feature pack metrics)
-                                        if (hasOwnerFilter) {
-                                            const ik = typeof it?.owner?.kind === 'string' ? String(it.owner.kind).trim().toLowerCase() : '';
-                                            const iid = typeof it?.owner?.id === 'string' ? String(it.owner.id).trim() : '';
-                                            if (ik !== ownerKind || iid !== ownerId)
-                                                return false;
-                                        }
-                                        // Filter by entity kinds (metrics that support any of these entity kinds)
-                                        if (hasEntityKindsFilter) {
-                                            const metricEntityKinds = Array.isArray(it.entity_kinds)
-                                                ? it.entity_kinds.map((x) => String(x || '').trim().toLowerCase())
-                                                : [];
-                                            const hasMatch = filterEntityKinds.some((ek) => metricEntityKinds.includes(ek));
-                                            if (!hasMatch)
-                                                return false;
-                                        }
-                                        // Filter by category
-                                        if (hasCategories) {
-                                            const cat = typeof it.category === 'string' ? it.category.trim().toLowerCase() : '';
-                                            if (!filterCategories.includes(cat))
-                                                return false;
-                                        }
-                                        // If entityKind is explicitly set (not auto), filter metrics that support it
-                                        if (!isAutoEntityKind) {
-                                            const kinds = Array.isArray(it.entity_kinds) ? it.entity_kinds : [];
-                                            // If the metric declares supported entity kinds, respect it.
-                                            // If it doesn't, we cannot safely assume it works for the chosen entityKind.
-                                            if (kinds.length === 0)
-                                                return false;
-                                            if (!kinds.includes(entityKind))
-                                                return false;
-                                        }
-                                        if (onlyWithPoints && Number(it.pointsCount || 0) <= 0)
-                                            return false;
-                                        return true;
-                                    })
-                                        .sort((a, b) => String(a.label || a.key).localeCompare(String(b.label || b.key)));
-                                    return (_jsx("div", { className: "span-12", children: _jsx(Card, { title: w.title || 'KPIs', children: _jsx("div", { style: { padding: 14 }, children: st?.loading ? (_jsx(Spinner, {})) : (_jsx("div", { className: "kpi-catalog-grid", children: filtered.map((it) => {
-                                                        const mk = it.key;
-                                                        const val = Number(st?.totalsByMetricKey?.[mk] ?? 0);
-                                                        const format = (it.unit === 'usd') ? 'usd' : 'number';
-                                                        const iconName = String(it.icon || fallbackIconForMetric(it.category) || '');
-                                                        const Icon = resolvePlatformIcon(iconName);
-                                                        const iconColor = String(it.icon_color || colors.accent.default);
-                                                        const t = effectiveTime(w);
-                                                        const ek = isAutoEntityKind ? pickEntityKindForMetric(it) : entityKind;
-                                                        const pf = { metricKey: mk };
-                                                        if (ek)
-                                                            pf.entityKind = ek;
-                                                        if (t) {
-                                                            pf.start = t.start;
-                                                            pf.end = t.end;
-                                                        }
-                                                        return (_jsxs("div", { className: "kpi-mini", style: {
-                                                                border: `1px solid ${colors.border.subtle}`,
-                                                                background: colors.bg.surface,
-                                                                cursor: 'pointer',
-                                                            }, title: "Click to drill down", role: "button", tabIndex: 0, onClick: () => {
-                                                                runDrillDescriptor({
-                                                                    kind: 'pointFilter',
-                                                                    pointFilter: pf,
-                                                                    title: `${String(w.title || 'KPIs')} • ${String(it.label || mk)}`,
-                                                                    format: format,
-                                                                });
-                                                            }, onKeyDown: (e) => {
-                                                                if (e.key !== 'Enter' && e.key !== ' ')
-                                                                    return;
-                                                                e.preventDefault();
-                                                                runDrillDescriptor({
-                                                                    kind: 'pointFilter',
-                                                                    pointFilter: pf,
-                                                                    title: `${String(w.title || 'KPIs')} • ${String(it.label || mk)}`,
-                                                                    format: format,
-                                                                });
-                                                            }, children: [_jsxs("div", { className: "kpi-mini-top", children: [_jsxs("div", { style: { minWidth: 0 }, children: [_jsx("div", { className: "kpi-mini-title", title: mk, children: it.label || mk }), _jsx("div", { className: "kpi-mini-val", children: formatNumber(val, format) })] }), Icon ? (_jsx("div", { className: "kpi-icon", style: {
-                                                                                width: 34,
-                                                                                height: 34,
-                                                                                borderRadius: radius.lg,
-                                                                                border: `1px solid ${colors.border.subtle}`,
-                                                                                background: colors.bg.muted,
-                                                                                color: iconColor,
-                                                                            }, children: _jsx(Icon, { size: 18, style: { color: iconColor } }) })) : null] }), _jsx("div", { className: "kpi-mini-badges", children: it.category ? _jsx(Badge, { children: it.category }) : null })] }, mk));
-                                                    }) })) }) }) }, w.key));
-                                }
-                                if (w.kind === 'kpi') {
-                                    const st = kpiValues[w.key];
-                                    const val = Number(st?.value ?? 0);
-                                    const prev = typeof st?.prev === 'number' ? st.prev : null;
-                                    let pct = 0;
-                                    if (prev !== null && prev > 0)
-                                        pct = ((val - prev) / prev) * 100;
-                                    const iconName = String(w?.presentation?.icon || cat?.icon || '');
-                                    const Icon = resolvePlatformIcon(iconName);
-                                    const iconColor = String(w?.presentation?.iconColor || cat?.icon_color || colors.accent.default);
-                                    const action = w?.presentation?.action;
-                                    const t = effectiveTime(w);
-                                    const valueSource = w?.presentation?.valueSource;
-                                    const buildPointFilter = () => {
-                                        // 1) valueSource-driven metric KPIs
-                                        if (valueSource?.kind === 'metrics_sum_last_per_entity' && typeof valueSource.metricKey === 'string') {
-                                            const pf = { metricKey: String(valueSource.metricKey).trim() };
-                                            const ek = typeof valueSource.entityKind === 'string' ? valueSource.entityKind.trim() : (typeof w?.query?.entityKind === 'string' ? w.query.entityKind.trim() : '');
-                                            if (ek)
-                                                pf.entityKind = ek;
-                                            if (t) {
-                                                pf.start = t.start;
-                                                pf.end = t.end;
-                                            }
-                                            return pf;
-                                        }
-                                        if (valueSource?.kind === 'metrics_sum_agg_per_entity' && typeof valueSource.metricKey === 'string') {
-                                            const pf = { metricKey: String(valueSource.metricKey).trim() };
-                                            const ek = typeof valueSource.entityKind === 'string' ? valueSource.entityKind.trim() : (typeof w?.query?.entityKind === 'string' ? w.query.entityKind.trim() : '');
-                                            if (ek)
-                                                pf.entityKind = ek;
-                                            if (t) {
-                                                pf.start = t.start;
-                                                pf.end = t.end;
-                                            }
-                                            return pf;
-                                        }
-                                        // 2) direct metric query KPIs
-                                        const q = w?.query;
-                                        const mk = typeof q?.metricKey === 'string' ? q.metricKey.trim() : '';
-                                        if (!mk)
-                                            return null;
-                                        const pf = { metricKey: mk };
-                                        if (typeof q.entityKind === 'string' && q.entityKind.trim())
-                                            pf.entityKind = q.entityKind.trim();
-                                        if (typeof q.entityId === 'string' && q.entityId.trim())
-                                            pf.entityId = q.entityId.trim();
-                                        if (Array.isArray(q.entityIds)) {
-                                            const ids = q.entityIds.map((x) => String(x || '').trim()).filter(Boolean);
-                                            if (ids.length)
-                                                pf.entityIds = ids;
-                                        }
-                                        if (typeof q.dataSourceId === 'string' && q.dataSourceId.trim())
-                                            pf.dataSourceId = q.dataSourceId.trim();
-                                        if (typeof q.sourceGranularity === 'string' && q.sourceGranularity.trim())
-                                            pf.sourceGranularity = q.sourceGranularity.trim();
-                                        if (q.params && typeof q.params === 'object')
-                                            pf.params = q.params;
-                                        if (q.dimensions && typeof q.dimensions === 'object')
-                                            pf.dimensions = q.dimensions;
-                                        if (t) {
-                                            pf.start = t.start;
-                                            pf.end = t.end;
-                                        }
-                                        return pf;
-                                    };
-                                    const drillPointFilter = buildPointFilter();
-                                    const drillMenu = valueSource?.kind === 'metrics_sum_last_per_entity_multi' && Array.isArray(valueSource.metricKeys)
-                                        ? valueSource.metricKeys.map((x) => String(x || '').trim()).filter(Boolean)
-                                        : [];
-                                    const canDrill = Boolean(drillPointFilter) || drillMenu.length > 0;
-                                    return (_jsx("div", { className: spanClass, children: _jsx(Card, { children: _jsxs("div", { className: "kpi", style: { cursor: canDrill ? 'pointer' : undefined }, title: canDrill ? 'Click to drill down' : undefined, role: canDrill ? 'button' : undefined, tabIndex: canDrill ? 0 : undefined, onClick: () => {
-                                                    if (drillMenu.length > 0) {
-                                                        openDrillMenu({
-                                                            title: `${String(w.title || cat?.label || metricKey || 'KPI')}`,
-                                                            format: fmt,
-                                                            options: drillMenu.map((mk) => {
-                                                                const pf = { metricKey: mk };
-                                                                const ek = typeof valueSource.entityKind === 'string' ? valueSource.entityKind.trim() : (typeof w?.query?.entityKind === 'string' ? w.query.entityKind.trim() : '');
-                                                                if (ek)
-                                                                    pf.entityKind = ek;
-                                                                if (t) {
-                                                                    pf.start = t.start;
-                                                                    pf.end = t.end;
-                                                                }
-                                                                return {
-                                                                    label: mk,
-                                                                    d: { kind: 'pointFilter', pointFilter: pf, title: `${String(w.title || 'KPI')} • ${mk}`, format: fmt },
-                                                                };
-                                                            }),
-                                                        });
-                                                        return;
-                                                    }
-                                                    if (drillPointFilter) {
-                                                        runDrillDescriptor({
-                                                            kind: 'pointFilter',
-                                                            pointFilter: drillPointFilter,
-                                                            title: `${String(w.title || cat?.label || metricKey || 'KPI')}`,
-                                                            format: fmt,
-                                                        });
-                                                        return;
-                                                    }
-                                                    if (action?.href) {
-                                                        const href = String(action.href);
-                                                        openRouteDrill({ href, title: String(action?.label || w.title || cat?.label || metricKey || 'Details') });
-                                                    }
-                                                }, onKeyDown: (e) => {
-                                                    if (!canDrill)
-                                                        return;
-                                                    if (e.key !== 'Enter' && e.key !== ' ')
-                                                        return;
-                                                    e.preventDefault();
-                                                    // Mirror click behavior
-                                                    if (drillMenu.length > 0) {
-                                                        openDrillMenu({
-                                                            title: `${String(w.title || cat?.label || metricKey || 'KPI')}`,
-                                                            format: fmt,
-                                                            options: drillMenu.map((mk) => {
-                                                                const pf = { metricKey: mk };
-                                                                const ek = typeof valueSource.entityKind === 'string' ? valueSource.entityKind.trim() : (typeof w?.query?.entityKind === 'string' ? w.query.entityKind.trim() : '');
-                                                                if (ek)
-                                                                    pf.entityKind = ek;
-                                                                if (t) {
-                                                                    pf.start = t.start;
-                                                                    pf.end = t.end;
-                                                                }
-                                                                return {
-                                                                    label: mk,
-                                                                    d: { kind: 'pointFilter', pointFilter: pf, title: `${String(w.title || 'KPI')} • ${mk}`, format: fmt },
-                                                                };
-                                                            }),
-                                                        });
-                                                        return;
-                                                    }
-                                                    if (drillPointFilter) {
-                                                        runDrillDescriptor({
-                                                            kind: 'pointFilter',
-                                                            pointFilter: drillPointFilter,
-                                                            title: `${String(w.title || cat?.label || metricKey || 'KPI')}`,
-                                                            format: fmt,
-                                                        });
-                                                    }
-                                                }, children: [_jsxs("div", { className: "kpi-head", children: [_jsxs("div", { children: [_jsx("div", { className: "kpi-title", children: w.title || cat?.label || metricKey }), _jsx("div", { className: "kpi-val", children: st?.loading ? '—' : formatNumber(val, fmt) })] }), Icon ? (_jsx("div", { className: "kpi-icon", style: {
-                                                                    borderRadius: radius.lg,
-                                                                    border: `1px solid ${colors.border.subtle}`,
-                                                                    background: colors.bg.muted,
-                                                                    color: iconColor,
-                                                                }, children: _jsx(Icon, { size: 22, style: { color: iconColor } }) })) : null] }), prev !== null ? (_jsxs("div", { className: "kpi-delta", children: [_jsx("span", { style: { color: pct >= 0 ? '#22c55e' : '#ef4444' }, children: formatNumber(pct, 'percent') }), _jsx("span", { style: { opacity: 0.7 }, children: "vs previous period" })] })) : null, action?.href && action?.label ? (_jsx("a", { className: "kpi-action", href: String(action.href), onClick: (e) => {
-                                                            // Keep UX in-dashboard: open in the drill panel, not a full navigation.
-                                                            e.preventDefault();
-                                                            e.stopPropagation?.();
-                                                            openRouteDrill({ href: String(action.href), title: String(action.label) });
-                                                        }, children: String(action.label) })) : (_jsx("span", { className: "kpi-action kpi-action--placeholder", "aria-hidden": "true", children: "\u00A0" }))] }) }) }, w.key));
-                                }
-                                if (w.kind === 'pie') {
-                                    const st = pieSlices[w.key];
-                                    const slices = Array.isArray(st?.slices) ? st?.slices : [];
-                                    const otherLabel = String(st?.otherLabel || w?.presentation?.otherLabel || 'Other');
-                                    const onSliceClick = async (slice) => {
-                                        const drill = slice?.drill;
-                                        if (!drill || !drill.pointFilter)
-                                            return;
-                                        await runDrilldown({ pointFilter: drill.pointFilter, title: drill.title, format: drill.format, page: 1 });
-                                    };
-                                    return (_jsx("div", { className: spanClass, children: _jsx(Card, { title: w.title || 'Pie', children: _jsxs("div", { style: { padding: 14 }, children: [!st || st?.loading ? _jsx(Spinner, {}) : _jsx(Donut, { slices: slices, format: fmt, onSliceClick: onSliceClick }), st && !st?.loading && slices.some((s) => s?.raw === '__other__') ? (_jsxs("div", { style: { marginTop: 10, fontSize: 12, color: colors.text.muted }, children: ["Tip: \"", otherLabel, "\" is an aggregate bucket; drilldown is available on named slices only (for now)."] })) : null] }) }) }, w.key));
-                                }
-                                if (w.kind === 'api_pie') {
-                                    const st = apiPieSlices[w.key];
-                                    const slices = Array.isArray(st?.slices) ? st?.slices : [];
-                                    const otherLabel = String(st?.otherLabel || w?.presentation?.otherLabel || 'Other');
-                                    const format = (w?.presentation?.format === 'usd') ? 'usd' : 'number';
-                                    const error = typeof st?.error === 'string' ? st.error : '';
-                                    const onSliceClick = async (slice) => {
-                                        const href = typeof slice?.href === 'string' ? slice.href : '';
-                                        if (!href)
-                                            return;
-                                        openRouteDrill({ href, title: `${String(w.title || 'Chart')} • ${String(slice?.label || '')}`.trim() });
-                                    };
-                                    return (_jsx("div", { className: spanClass, children: _jsx(Card, { title: w.title || 'Pie', children: _jsxs("div", { style: { padding: 14 }, children: [!st || st?.loading ? _jsx(Spinner, {}) : (error ? (_jsx("div", { style: { display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: 240 }, children: _jsxs("div", { style: { fontSize: 13, color: colors.text.muted, textAlign: 'center', maxWidth: 520 }, children: [_jsx("div", { style: { fontWeight: 600, color: colors.text.primary, marginBottom: 6 }, children: "Could not load chart" }), _jsx("div", { children: error }), _jsxs("div", { style: { marginTop: 8, fontSize: 12 }, children: ["Tip: open ", _jsx("code", { children: "/api/crm/reports/pipeline-health" }), " in a new tab to see the raw response."] })] }) })) : (_jsx(Donut, { slices: slices, format: format, onSliceClick: onSliceClick }))), st && !st?.loading && slices.some((s) => s?.raw === '__other__') ? (_jsxs("div", { style: { marginTop: 10, fontSize: 12, color: colors.text.muted }, children: ["Tip: \"", otherLabel, "\" is an aggregate bucket; click named slices to open filtered lists."] })) : null] }) }) }, w.key));
-                                }
-                                if (w.kind === 'api_table') {
-                                    const st = apiTables[w.key];
-                                    const rows = Array.isArray(st?.rows) ? st?.rows : [];
-                                    const pres = w?.presentation || {};
-                                    const cols = Array.isArray(pres.columns) ? pres.columns : [];
-                                    const rowHrefTemplate = typeof pres.rowHrefTemplate === 'string' ? pres.rowHrefTemplate : '';
-                                    const renderCell = (row, col) => {
-                                        const field = String(col?.field || '').trim();
-                                        const label = String(col?.label || field || '');
-                                        const fmt = String(col?.format || '').toLowerCase();
-                                        const raw = field ? getByPath(row, field) : undefined;
-                                        if (fmt === 'usd')
-                                            return formatNumber(Number(raw ?? 0), 'usd');
-                                        if (fmt === 'number')
-                                            return formatNumber(Number(raw ?? 0), 'number');
-                                        if (fmt === 'datetime' || fmt === 'date') {
-                                            if (!raw)
-                                                return '—';
-                                            const d = new Date(String(raw));
-                                            if (!Number.isFinite(d.getTime()))
-                                                return String(raw);
-                                            return fmt === 'date' ? d.toLocaleDateString() : d.toLocaleString();
-                                        }
-                                        return raw == null ? '—' : String(raw);
-                                    };
-                                    return (_jsx("div", { className: spanClass, children: _jsx(Card, { title: w.title || 'Table', children: _jsx("div", { style: { padding: 14 }, children: st?.loading ? _jsx(Spinner, {}) : (_jsxs(_Fragment, { children: [_jsxs("div", { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }, children: [_jsx("div", { style: { fontSize: 12, color: colors.text.muted }, children: typeof st?.total === 'number' ? `${st.total.toLocaleString()} total` : `${rows.length.toLocaleString()} rows` }), rowHrefTemplate ? _jsx(Badge, { variant: "info", children: "click row to open" }) : null] }), _jsx("div", { style: { overflowX: 'auto', border: `1px solid ${colors.border.subtle}`, borderRadius: 10 }, children: _jsxs("table", { style: { width: '100%', borderCollapse: 'collapse', fontSize: 12 }, children: [_jsx("thead", { children: _jsx("tr", { style: { textAlign: 'left', background: colors.bg.muted }, children: cols.map((c, idx) => (_jsx("th", { style: { padding: '8px 10px' }, children: String(c?.label || c?.field || '') }, idx))) }) }), _jsxs("tbody", { children: [rows.map((r, idx) => {
-                                                                                const href = rowHrefTemplate ? applyTemplate(rowHrefTemplate, r) : '';
-                                                                                return (_jsx("tr", { style: { borderTop: `1px solid ${colors.border.subtle}`, cursor: href ? 'pointer' : 'default' }, onClick: () => {
-                                                                                        if (!href)
-                                                                                            return;
-                                                                                        openRouteDrill({ href, title: `${String(w.title || 'Table')} • ${String(r?.name || r?.id || '')}`.trim() });
-                                                                                    }, children: cols.map((c, j) => (_jsx("td", { style: { padding: '8px 10px', whiteSpace: 'nowrap' }, children: j === 0 && href ? (_jsx("a", { href: href, style: { color: colors.accent.default, textDecoration: 'none' }, onClick: (e) => {
-                                                                                                e.preventDefault();
-                                                                                                e.stopPropagation?.();
-                                                                                                openRouteDrill({ href, title: `${String(w.title || 'Table')} • ${String(r?.name || r?.id || '')}`.trim() });
-                                                                                            }, children: renderCell(r, c) })) : renderCell(r, c) }, j))) }, String(r?.id || idx)));
-                                                                            }), rows.length === 0 ? (_jsx("tr", { children: _jsx("td", { colSpan: Math.max(1, cols.length), style: { padding: '10px', color: colors.text.muted }, children: "No rows" }) })) : null] })] }) })] })) }) }) }, w.key));
-                                }
-                                if (w.kind === 'metric_table') {
-                                    const st = metricTables[w.key];
-                                    const rows = Array.isArray(st?.rows) ? st?.rows : [];
-                                    const pres = w?.presentation || {};
-                                    const cols = Array.isArray(pres.columns) ? pres.columns : [];
-                                    const rowHrefTemplate = typeof pres.rowHrefTemplate === 'string' ? pres.rowHrefTemplate : '';
-                                    const renderCell = (row, col) => {
-                                        const field = String(col?.field || '').trim();
-                                        const fmt = String(col?.format || '').toLowerCase();
-                                        const raw = field ? getByPath(row, field) : undefined;
-                                        if (fmt === 'usd')
-                                            return formatNumber(Number(raw ?? 0), 'usd');
-                                        if (fmt === 'number')
-                                            return formatNumber(Number(raw ?? 0), 'number');
-                                        if (fmt === 'datetime' || fmt === 'date') {
-                                            if (!raw)
-                                                return '—';
-                                            const d = new Date(String(raw));
-                                            if (!Number.isFinite(d.getTime()))
-                                                return String(raw);
-                                            return fmt === 'date' ? d.toLocaleDateString() : d.toLocaleString();
-                                        }
-                                        return raw == null ? '—' : String(raw);
-                                    };
-                                    return (_jsx("div", { className: spanClass, children: _jsx(Card, { title: w.title || 'Table', children: _jsx("div", { style: { padding: 14 }, children: st?.loading ? _jsx(Spinner, {}) : (_jsxs(_Fragment, { children: [_jsxs("div", { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }, children: [_jsx("div", { style: { fontSize: 12, color: colors.text.muted }, children: typeof st?.total === 'number' ? `${st.total.toLocaleString()} total` : `${rows.length.toLocaleString()} rows` }), rowHrefTemplate ? _jsx(Badge, { variant: "info", children: "click row to open" }) : null] }), _jsx("div", { style: { overflowX: 'auto', border: `1px solid ${colors.border.subtle}`, borderRadius: 10 }, children: _jsxs("table", { style: { width: '100%', borderCollapse: 'collapse', fontSize: 12 }, children: [_jsx("thead", { children: _jsx("tr", { style: { textAlign: 'left', background: colors.bg.muted }, children: cols.map((c, idx) => (_jsx("th", { style: { padding: '8px 10px' }, children: String(c?.label || c?.field || '') }, idx))) }) }), _jsxs("tbody", { children: [rows.map((r, idx) => {
-                                                                                const href = rowHrefTemplate ? applyTemplate(rowHrefTemplate, r) : '';
-                                                                                return (_jsx("tr", { style: { borderTop: `1px solid ${colors.border.subtle}`, cursor: href ? 'pointer' : 'default' }, onClick: () => {
-                                                                                        if (!href)
-                                                                                            return;
-                                                                                        openRouteDrill({ href, title: `${String(w.title || 'Table')} • ${String(r?.name || r?.id || '')}`.trim() });
-                                                                                    }, children: cols.map((c, j) => (_jsx("td", { style: { padding: '8px 10px', whiteSpace: 'nowrap' }, children: j === 0 && href ? (_jsx("a", { href: href, style: { color: colors.accent.default, textDecoration: 'none' }, onClick: (e) => {
-                                                                                                e.preventDefault();
-                                                                                                e.stopPropagation?.();
-                                                                                                openRouteDrill({ href, title: `${String(w.title || 'Table')} • ${String(r?.name || r?.id || '')}`.trim() });
-                                                                                            }, children: renderCell(r, c) })) : renderCell(r, c) }, j))) }, String(r?.id || idx)));
-                                                                            }), rows.length === 0 ? (_jsx("tr", { children: _jsx("td", { colSpan: Math.max(1, cols.length), style: { padding: '10px', color: colors.text.muted }, children: "No rows" }) })) : null] })] }) })] })) }) }) }, w.key));
-                                }
-                                if (w.kind === 'line') {
-                                    const st = lineSeries[w.key];
-                                    const series = st?.series || [];
-                                    const currentBucket = (lineBucketByWidgetKey[w.key] || w?.seriesSpec?.bucket || 'day');
-                                    const overlayEnabled = Boolean(w?.presentation?.timelineOverlay);
-                                    const bucketControl = (_jsx(Select, { value: currentBucket, onChange: (v) => setLineBucketByWidgetKey((p) => ({ ...p, [w.key]: selectValue(v) })), options: [
-                                            { value: 'day', label: 'Daily' },
-                                            { value: 'week', label: 'Weekly' },
-                                            { value: 'month', label: 'Monthly' },
-                                        ] }));
-                                    return (_jsx("div", { className: spanClass, children: st?.loading ? (_jsx(Card, { title: w.title || 'Line', children: _jsx("div", { style: { padding: 18 }, children: _jsx(Spinner, {}) }) })) : (_jsx(MultiLineChart, { title: w.title || 'Line', format: fmt, series: series, bucket: currentBucket, bucketControl: bucketControl, timelineOverlay: overlayEnabled, timelineEvents: overlayEnabled ? timelineEvents : [], onDrill: (d) => runDrillDescriptor(d), onDrillMenu: (args) => openDrillMenu(args) })) }, w.key));
-                                }
-                                return (_jsx("div", { className: spanClass, children: _jsx(Card, { title: w.title || w.kind, children: _jsxs("div", { style: { padding: 14, opacity: 0.75, fontSize: 12 }, children: ["Unsupported widget kind: ", String(w.kind)] }) }) }, w.key));
-                            })) : null] }), _jsx(Modal, { open: shareOpen, onClose: () => setShareOpen(false), title: "Share dashboard", description: definition ? `ACL for ${definition.name}` : '', children: _jsxs("div", { style: { padding: 12 }, children: [sharesError ? _jsx("div", { style: { color: '#ef4444', fontSize: 13, marginBottom: 10 }, children: sharesError }) : null, sharesLoading ? _jsx(Spinner, {}) : (_jsx(AclPicker, { config: {
+                                        ] }), preset === 'custom' ? (_jsxs(_Fragment, { children: [_jsx(Input, { type: "date", value: customStart, onChange: (e) => setCustomStart(e.target.value) }), _jsx(Input, { type: "date", value: customEnd, onChange: (e) => setCustomEnd(e.target.value) })] })) : null, _jsx(Button, { onClick: () => queryMetrics(), disabled: loadingDash, children: "Refresh" }), definition && definition.canEdit ? (_jsx(Button, { variant: "secondary", onClick: openShares, children: "Share" })) : null] })] }), _jsx("div", { className: "subtitle", children: definition?.description || '—' }), error ? _jsx("div", { style: { color: '#ef4444', fontSize: 13 }, children: error }) : null, _jsxs("div", { className: "grid", children: [loadingDash && !definition ? (_jsx("div", { className: "span-12", children: _jsx(Card, { children: _jsx("div", { style: { padding: 18 }, children: _jsx(Spinner, {}) }) }) })) : null, loadingDash && definition ? (_jsx("div", { className: "span-12", style: { opacity: 0.9 }, children: _jsxs("div", { style: { display: 'flex', alignItems: 'center', gap: 10, padding: '6px 2px' }, children: [_jsx(Spinner, {}), _jsx("span", { style: { fontSize: 13, color: colors.text.muted }, children: "Loading dashboard\u2026" })] }) })) : null, definition ? widgetList.map((w) => renderWidget(w)) : null] }), _jsx(Modal, { open: shareOpen, onClose: () => setShareOpen(false), title: "Share dashboard", description: definition ? `ACL for ${definition.name}` : '', children: _jsxs("div", { style: { padding: 12 }, children: [sharesError ? _jsx("div", { style: { color: '#ef4444', fontSize: 13, marginBottom: 10 }, children: sharesError }) : null, sharesLoading ? _jsx(Spinner, {}) : (_jsx(AclPicker, { config: {
                                         mode: 'granular',
                                         principals: isLddSharingEnabled()
                                             ? { users: true, groups: true, roles: true, locations: true, divisions: true, departments: true }
@@ -2649,13 +3018,79 @@ export function Dashboards(props = {}) {
                                     }, onUpdate: async () => { } }))] }) }), _jsx(Modal, { open: drillMenuOpen, onClose: () => setDrillMenuOpen(false), title: drillMenuTitle, description: "This value is composed of multiple metrics. Choose what to drill into.", children: _jsxs("div", { style: { padding: 12, display: 'flex', flexDirection: 'column', gap: 10 }, children: [drillMenuOptions.length === 0 ? (_jsx("div", { style: { fontSize: 13, opacity: 0.75 }, children: "No drilldown options available." })) : (drillMenuOptions.map((opt, idx) => (_jsxs(Button, { variant: "secondary", onClick: async () => {
                                         setDrillMenuOpen(false);
                                         await runDrillDescriptor(opt.d);
-                                    }, children: ["Drill into: ", opt.label] }, `${opt.label}_${idx}`)))), _jsx("div", { style: { display: 'flex', justifyContent: 'flex-end' }, children: _jsx(Button, { variant: "secondary", onClick: () => setDrillMenuOpen(false), children: "Close" }) }), _jsx("div", { style: { fontSize: 12, opacity: 0.7 }, children: "Tip: if you want \u201Cone-click drilldown\u201D for blended metrics, we can model the blend as a first-class derived metric later." })] }) }), _jsx(Modal, { open: drillOpen, onClose: () => setDrillOpen(false), title: drillTitle, description: `Underlying points (report tz: ${drillReportTz})`, children: _jsxs("div", { style: { padding: 12 }, children: [drillError ? _jsx("div", { style: { color: '#ef4444', fontSize: 13, marginBottom: 10 }, children: drillError }) : null, drillLoading ? _jsx(Spinner, {}) : (_jsxs(_Fragment, { children: [_jsxs("div", { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 10 }, children: [_jsxs("div", { style: { fontSize: 12, color: colors.text.muted }, children: [drillPagination.total.toLocaleString(), " points"] }), _jsxs("div", { style: { display: 'flex', gap: 8 }, children: [_jsx(Button, { variant: "secondary", disabled: !drillLastFilter, onClick: () => {
+                                    }, children: ["Drill into: ", opt.label] }, `${opt.label}_${idx}`)))), _jsx("div", { style: { display: 'flex', justifyContent: 'flex-end' }, children: _jsx(Button, { variant: "secondary", onClick: () => setDrillMenuOpen(false), children: "Close" }) }), _jsx("div", { style: { fontSize: 12, opacity: 0.7 }, children: "Tip: if you want \u201Cone-click drilldown\u201D for blended metrics, we can model the blend as a first-class derived metric later." })] }) }), drillOpen ? (drillMinimized ? (
+                    /* Minimized bar at bottom center */
+                    _jsxs("div", { role: "button", tabIndex: 0, onClick: () => setDrillMinimized(false), onKeyDown: (e) => {
+                            if (e.key !== 'Enter' && e.key !== ' ')
+                                return;
+                            e.preventDefault();
+                            setDrillMinimized(false);
+                        }, style: {
+                            position: 'fixed',
+                            left: '50%',
+                            transform: 'translateX(-50%)',
+                            bottom: 16,
+                            zIndex: 100000,
+                            minWidth: 280,
+                            maxWidth: 'min(520px, calc(100vw - 32px))',
+                            padding: '10px 16px',
+                            borderRadius: 14,
+                            border: `1px solid ${colors.border.subtle}`,
+                            background: colors.bg.muted,
+                            boxShadow: '0 24px 48px rgba(0,0,0,0.35)',
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            gap: 12,
+                        }, children: [_jsx("div", { style: { fontWeight: 600, fontSize: 13, color: colors.text.primary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, children: drillTitle }), _jsx("div", { style: { fontSize: 11, color: colors.text.muted, flexShrink: 0 }, children: "Click to expand" })] })) : (
+                    /* Center popup overlay */
+                    _jsxs(_Fragment, { children: [_jsx("div", { onClick: () => setDrillMinimized(true), style: {
+                                    position: 'fixed',
+                                    inset: 0,
+                                    zIndex: 99999,
+                                    backgroundColor: 'rgba(0,0,0,0.45)',
+                                    backdropFilter: 'blur(2px)',
+                                } }), _jsx("div", { style: {
+                                    position: 'fixed',
+                                    top: 0,
+                                    left: 0,
+                                    right: 0,
+                                    bottom: 0,
+                                    zIndex: 100000,
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    padding: drillMaximized ? 0 : 24,
+                                    pointerEvents: 'none',
+                                }, children: _jsxs("div", { style: {
+                                        pointerEvents: 'auto',
+                                        width: drillMaximized ? '100%' : '80vw',
+                                        maxWidth: drillMaximized ? '100%' : '1400px',
+                                        height: drillMaximized ? '100%' : 'auto',
+                                        maxHeight: drillMaximized ? '100%' : 'calc(100vh - 48px)',
+                                        background: colors.bg.surface,
+                                        borderRadius: drillMaximized ? 0 : 16,
+                                        border: drillMaximized ? 'none' : `1px solid ${colors.border.subtle}`,
+                                        boxShadow: drillMaximized ? 'none' : '0 24px 48px rgba(0,0,0,0.35)',
+                                        display: 'flex',
+                                        flexDirection: 'column',
+                                        overflow: 'hidden',
+                                    }, children: [_jsxs("div", { style: {
+                                                padding: '16px 20px',
+                                                borderBottom: `1px solid ${colors.border.subtle}`,
+                                                display: 'flex',
+                                                alignItems: 'center',
+                                                justifyContent: 'space-between',
+                                                gap: 16,
+                                                flexShrink: 0,
+                                            }, children: [_jsxs("div", { style: { overflow: 'hidden' }, children: [_jsx("div", { style: { fontWeight: 700, fontSize: 16, color: colors.text.primary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, children: drillTitle }), _jsxs("div", { style: { fontSize: 11, color: colors.text.muted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }, children: ["Underlying points (report tz: ", drillReportTz, ")"] })] }), _jsxs("div", { style: { display: 'flex', gap: 8, alignItems: 'center', flexShrink: 0 }, children: [_jsx(Button, { variant: "secondary", onClick: () => setDrillMinimized(true), children: "Minimize" }), _jsx(Button, { variant: "secondary", onClick: () => setDrillMaximized(!drillMaximized), children: drillMaximized ? 'Restore' : 'Maximize' }), _jsx(Button, { variant: "secondary", disabled: !drillLastFilter, onClick: () => {
                                                                 if (!drillLastFilter)
                                                                     return;
                                                                 const prefill = encodeReportPrefill({ title: drillTitle, format: drillFormat, pointFilter: drillLastFilter });
                                                                 const href = `/reports/builder?prefill=${prefill}`;
                                                                 navigate(href);
-                                                            }, children: "Open in Report Writer" }), _jsx(Button, { variant: "secondary", disabled: drillLoading || drillPagination.page <= 1 || !drillLastFilter, onClick: () => drillLastFilter && runDrilldown({ pointFilter: drillLastFilter, title: drillTitle, format: drillFormat, page: drillPagination.page - 1 }), children: "Prev" }), _jsx(Button, { variant: "secondary", disabled: drillLoading || !drillLastFilter || (drillPagination.page * drillPagination.pageSize) >= drillPagination.total, onClick: () => drillLastFilter && runDrilldown({ pointFilter: drillLastFilter, title: drillTitle, format: drillFormat, page: drillPagination.page + 1 }), children: "Next" })] })] }), _jsx("div", { style: { overflowX: 'auto', border: `1px solid ${colors.border.subtle}`, borderRadius: 10 }, children: _jsxs("table", { style: { width: '100%', borderCollapse: 'collapse', fontSize: 12 }, children: [_jsx("thead", { children: _jsxs("tr", { style: { textAlign: 'left', background: colors.bg.muted }, children: [_jsx("th", { style: { padding: '8px 10px' }, children: "Date" }), _jsx("th", { style: { padding: '8px 10px' }, children: "Value" }), _jsx("th", { style: { padding: '8px 10px' }, children: "Entity" }), _jsx("th", { style: { padding: '8px 10px' }, children: "Data Source" }), _jsx("th", { style: { padding: '8px 10px' }, children: "Dimensions" })] }) }), _jsx("tbody", { children: drillPoints.length === 0 ? (_jsx("tr", { children: _jsx("td", { colSpan: 5, style: { padding: 12, color: colors.text.muted }, children: "No points found." }) })) : drillPoints.map((p) => (_jsxs("tr", { style: { borderTop: `1px solid ${colors.border.subtle}` }, children: [_jsx("td", { style: { padding: '8px 10px', whiteSpace: 'nowrap' }, children: String(p.date || '') }), _jsx("td", { style: { padding: '8px 10px', whiteSpace: 'nowrap' }, children: formatNumber(Number(p.value ?? 0), drillFormat) }), _jsxs("td", { style: { padding: '8px 10px', whiteSpace: 'nowrap' }, children: [_jsx("span", { style: { color: colors.text.muted }, children: String(p.entityKind || '') }), _jsx("span", { children: ":" }), _jsx("span", { style: { marginLeft: 6 }, children: String(p.entityId || '') })] }), _jsx("td", { style: { padding: '8px 10px', whiteSpace: 'nowrap' }, children: String(p.dataSourceId || '') }), _jsx("td", { style: { padding: '8px 10px' }, children: _jsx("code", { style: { fontSize: 11 }, children: JSON.stringify(p.dimensions || {}) }) })] }, String(p.id)))) })] }) })] }))] }) }), routeDrillOpen ? (routeDrillMinimized ? (
+                                                            }, children: "Open in Report Writer" }), _jsx(Button, { variant: "secondary", onClick: () => { setDrillOpen(false); setDrillMaximized(false); }, children: "Close" })] })] }), _jsxs("div", { style: { flex: 1, overflow: 'auto', padding: 20 }, children: [drillError ? _jsx("div", { style: { color: '#ef4444', fontSize: 13, marginBottom: 10 }, children: drillError }) : null, drillLoading ? _jsx(Spinner, {}) : (_jsxs(_Fragment, { children: [_jsxs("div", { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 10 }, children: [_jsxs("div", { style: { fontSize: 12, color: colors.text.muted }, children: [drillPagination.total.toLocaleString(), " points"] }), _jsxs("div", { style: { display: 'flex', gap: 8 }, children: [_jsx(Button, { variant: "secondary", disabled: drillLoading || drillPagination.page <= 1 || !drillLastFilter, onClick: () => drillLastFilter && runDrilldown({ pointFilter: drillLastFilter, title: drillTitle, format: drillFormat, page: drillPagination.page - 1 }), children: "Prev" }), _jsx(Button, { variant: "secondary", disabled: drillLoading || !drillLastFilter || (drillPagination.page * drillPagination.pageSize) >= drillPagination.total, onClick: () => drillLastFilter && runDrilldown({ pointFilter: drillLastFilter, title: drillTitle, format: drillFormat, page: drillPagination.page + 1 }), children: "Next" })] })] }), _jsx("div", { style: { overflowX: 'auto', border: `1px solid ${colors.border.subtle}`, borderRadius: 10 }, children: _jsxs("table", { style: { width: '100%', borderCollapse: 'collapse', fontSize: 12 }, children: [_jsx("thead", { children: _jsxs("tr", { style: { textAlign: 'left', background: colors.bg.muted }, children: [_jsx("th", { style: { padding: '8px 10px' }, children: "Date" }), _jsx("th", { style: { padding: '8px 10px' }, children: "Value" }), _jsx("th", { style: { padding: '8px 10px' }, children: "Entity" }), _jsx("th", { style: { padding: '8px 10px' }, children: "Data Source" }), _jsx("th", { style: { padding: '8px 10px' }, children: "Dimensions" })] }) }), _jsx("tbody", { children: drillPoints.length === 0 ? (_jsx("tr", { children: _jsx("td", { colSpan: 5, style: { padding: 12, color: colors.text.muted }, children: "No points found." }) })) : drillPoints.map((p) => (_jsxs("tr", { style: { borderTop: `1px solid ${colors.border.subtle}` }, children: [_jsx("td", { style: { padding: '8px 10px', whiteSpace: 'nowrap' }, children: String(p.date || '') }), _jsx("td", { style: { padding: '8px 10px', whiteSpace: 'nowrap' }, children: formatNumber(Number(p.value ?? 0), drillFormat) }), _jsxs("td", { style: { padding: '8px 10px', whiteSpace: 'nowrap' }, children: [_jsx("span", { style: { color: colors.text.muted }, children: String(p.entityKind || '') }), _jsx("span", { children: ":" }), _jsx("span", { style: { marginLeft: 6 }, children: String(p.entityId || '') })] }), _jsx("td", { style: { padding: '8px 10px', whiteSpace: 'nowrap' }, children: String(p.dataSourceId || '') }), _jsx("td", { style: { padding: '8px 10px' }, children: _jsx("code", { style: { fontSize: 11 }, children: JSON.stringify(p.dimensions || {}) }) })] }, String(p.id)))) })] }) })] }))] })] }) })] }))) : null, routeDrillOpen ? (routeDrillMinimized ? (
                     /* Minimized bar at bottom center */
                     _jsxs("div", { role: "button", tabIndex: 0, onClick: () => setRouteDrillMinimized(false), onKeyDown: (e) => {
                             if (e.key !== 'Enter' && e.key !== ' ')

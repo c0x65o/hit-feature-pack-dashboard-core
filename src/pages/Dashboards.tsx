@@ -6,7 +6,7 @@ import type { AclEntry, AclPickerConfig } from '@hit/ui-kit';
 import { useUi } from '@hit/ui-kit';
 import { AclPicker } from '@hit/ui-kit/components/AclPicker';
 import { createFetchPrincipals } from '@hit/feature-pack-auth-core';
-import { useThemeTokens } from '@hit/ui-kit';
+import { useThemeContext, darkTheme, lightTheme, getConfiguredTheme } from '@hit/ui-kit';
 import { LucideIcon, type LucideIconComponent } from '../utils/lucide-dynamic';
 import { encodeReportPrefill } from '../utils/report-prefill';
 import { normalizePieBlock } from '../reporting/report-blocks';
@@ -151,6 +151,13 @@ type MetricCatalogItem = {
   pointsCount?: number;
 };
 
+type WidgetRenderContext = {
+  spanClass: string;
+  metricKey: string;
+  fmt: 'number' | 'usd';
+  cat?: MetricCatalogItem;
+};
+
 type ShareRow = {
   id: string;
   principalType: 'user' | 'group' | 'role' | 'location' | 'division' | 'department';
@@ -269,6 +276,54 @@ function pickEntityKindForMetric(item?: MetricCatalogItem | null): string | unde
   return kinds[0];
 }
 
+function groupWidgetsByKind(widgets: any[]): Record<string, any[]> {
+  const out: Record<string, any[]> = {};
+  const list = Array.isArray(widgets) ? widgets : [];
+  for (const w of list) {
+    const kind = String(w?.kind || '').trim();
+    if (!kind) continue;
+    if (!out[kind]) out[kind] = [];
+    out[kind].push(w);
+  }
+  return out;
+}
+
+function resolveWidgetSpanClass(widget: any): string {
+  const grid = widget?.grid || {};
+  const span =
+    typeof grid.w === 'number'
+      ? grid.w
+      : widget?.kind === 'kpi'
+        ? 3
+        : widget?.kind === 'pie' || widget?.kind === 'api_pie'
+          ? 6
+          : 12;
+  if (span === 12) return 'span-12';
+  if (span === 6) return 'span-6';
+  if (span === 4) return 'span-4';
+  return 'span-3';
+}
+
+function useSafeThemeTokens() {
+  const ctx = useThemeContext();
+  if (ctx?.theme) return ctx.theme;
+  const fallback = getConfiguredTheme?.() === 'dark' ? darkTheme : lightTheme;
+  return fallback;
+}
+
+function formatBucketLabel(bucket: Bucket, bucketIso?: string): string {
+  if (!bucketIso) return '';
+  const d = new Date(bucketIso);
+  if (!Number.isFinite(d.getTime())) return String(bucketIso);
+  if (bucket === 'month') return d.toLocaleDateString(undefined, { month: 'short' });
+  if (bucket === 'week') {
+    const m = d.toLocaleDateString(undefined, { month: 'short' });
+    const day = d.getDate();
+    return `Wk ${m} ${day}`;
+  }
+  return d.toLocaleDateString(undefined, { weekday: 'short' });
+}
+
 function Donut({
   slices,
   format,
@@ -278,7 +333,7 @@ function Donut({
   format: 'number' | 'usd';
   onSliceClick?: (slice: { label: string; value: number; color: string; raw?: unknown }) => void;
 }) {
-  const { colors, radius, shadows } = useThemeTokens();
+  const { colors, radius, shadows } = useSafeThemeTokens();
   const total = slices.reduce((a, s) => a + (Number.isFinite(s.value) ? s.value : 0), 0);
   
   // Show empty state if no data
@@ -552,7 +607,7 @@ function MultiLineChart({
   onDrill?: (d: DrillDescriptor) => void;
   onDrillMenu?: (args: { title: string; format: 'number' | 'usd'; options: Array<{ label: string; d: DrillDescriptor }> }) => void;
 }) {
-  const { colors, radius, shadows } = useThemeTokens();
+  const { colors, radius, shadows } = useSafeThemeTokens();
   const wPx = 900;
   const hPx = 240;
   const paddingX = 44;
@@ -947,7 +1002,7 @@ function fetchWithAuth(input: RequestInfo | URL, init?: RequestInit) {
 export function Dashboards(props: DashboardsProps = {}) {
   const { pack: packProp, dashboardKey: dashboardKeyProp, onNavigate } = props as any;
   const { Page, Card, Button, Dropdown, Select, Input, Modal, Spinner, Badge, DataTable } = useUi();
-  const { colors, radius } = useThemeTokens();
+  const { colors, radius } = useSafeThemeTokens();
   const searchParams = useSearchParams();
   const searchParamsString = searchParams?.toString() || '';
 
@@ -1319,6 +1374,13 @@ export function Dashboards(props: DashboardsProps = {}) {
   const [kpiCatalogTotals, setKpiCatalogTotals] = React.useState<
     Record<string, { loading: boolean; totalsByMetricKey?: Record<string, number> }>
   >({});
+  const [gaugeValues, setGaugeValues] = React.useState<
+    Record<string, { loading: boolean; value?: number; max?: number; min?: number }>
+  >({});
+  const [tabsData, setTabsData] = React.useState<
+    Record<string, { loading: boolean; tabs?: Array<{ key: string; label: string; icon?: string; bucket: Bucket; total: number; points: Array<{ t: number; v: number; bucketIso?: string }>; format: 'number' | 'usd'; summaryLabel?: string; maxPoints: number }> }>
+  >({});
+  const [tabsActiveByWidget, setTabsActiveByWidget] = React.useState<Record<string, string>>({});
   const [pieSlices, setPieSlices] = React.useState<Record<string, { loading: boolean; slices?: any[]; otherLabel?: string }>>({});
   const [apiPieSlices, setApiPieSlices] = React.useState<
     Record<string, { loading: boolean; slices?: any[]; otherLabel?: string; error?: string }>
@@ -1348,6 +1410,8 @@ export function Dashboards(props: DashboardsProps = {}) {
 
   // Pie drilldown (slice -> underlying points)
   const [drillOpen, setDrillOpen] = React.useState(false);
+  const [drillMinimized, setDrillMinimized] = React.useState(false);
+  const [drillMaximized, setDrillMaximized] = React.useState(false);
   const [drillLoading, setDrillLoading] = React.useState(false);
   const [drillError, setDrillError] = React.useState<string | null>(null);
   const [drillTitle, setDrillTitle] = React.useState<string>('Drilldown');
@@ -1370,6 +1434,7 @@ export function Dashboards(props: DashboardsProps = {}) {
   const runDrilldown = React.useCallback(async (args: { pointFilter: any; title: string; format: 'number' | 'usd'; page?: number }) => {
     const page = typeof args.page === 'number' ? args.page : 1;
     setDrillOpen(true);
+    setDrillMinimized(false);
     setDrillTitle(args.title || 'Drilldown');
     setDrillFormat(args.format);
     setDrillError(null);
@@ -1409,6 +1474,7 @@ export function Dashboards(props: DashboardsProps = {}) {
 
     // aggregateRow: let the server derive the exact filter (bucket narrowing, entityId/groupBy dims).
     setDrillOpen(true);
+    setDrillMinimized(false);
     setDrillTitle(d.title || 'Drilldown');
     setDrillFormat(d.format);
     setDrillError(null);
@@ -1740,779 +1806,925 @@ export function Dashboards(props: DashboardsProps = {}) {
     if (!definition?.definition) return;
     const def = definition.definition;
     const widgets = Array.isArray(def.widgets) ? def.widgets : [];
+    const widgetsByKind = groupWidgetsByKind(widgets);
 
-    // KPI Catalog (auto-generated KPI tiles from metrics catalog)
-    const kpiCatalogs = widgets.filter((w: any) => w?.kind === 'kpi_catalog');
-    if (kpiCatalogs.length) {
-      setKpiCatalogTotals((prev) => {
-        const next = { ...prev };
-        for (const w of kpiCatalogs) next[w.key] = { loading: true, totalsByMetricKey: prev[w.key]?.totalsByMetricKey || {} };
-        return next;
-      });
-      await Promise.all(
-        kpiCatalogs.map(async (w: any) => {
-          try {
-            // Fetch a local snapshot of the catalog so we can compute immediately (avoid setState timing).
-            const catalogMap = Object.keys(catalogByKey || {}).length ? catalogByKey : await fetchCatalogMap();
-            if (!Object.keys(catalogByKey || {}).length && Object.keys(catalogMap).length) setCatalogByKey(catalogMap);
-            const pres = w?.presentation || {};
-            const rawEntityKind = typeof pres?.entityKind === 'string' ? pres.entityKind.trim() : '';
-            const isAutoEntityKind = rawEntityKind === '' || rawEntityKind.toLowerCase() === 'auto';
-            const entityKind = !isAutoEntityKind ? rawEntityKind : '';
-            const onlyWithPoints = pres?.onlyWithPoints === true;
-            const ownerKind = typeof pres?.owner?.kind === 'string' ? pres.owner.kind.trim().toLowerCase() : '';
-            const ownerId = typeof pres?.owner?.id === 'string' ? pres.owner.id.trim() : '';
-            const hasOwnerFilter = Boolean(ownerKind && ownerId);
-            // Support filtering by entity kinds (metrics that support these entity kinds)
-            const filterEntityKinds: string[] = Array.isArray(pres?.filterEntityKinds)
-              ? (pres.filterEntityKinds as any[]).map((x) => String(x || '').trim().toLowerCase()).filter(Boolean)
-              : [];
-            const hasEntityKindsFilter = filterEntityKinds.length > 0;
-            // Support filtering by category
-            const filterCategories: string[] = Array.isArray(pres?.filterCategories)
-              ? (pres.filterCategories as any[]).map((x) => String(x || '').trim().toLowerCase()).filter(Boolean)
-              : [];
-            const hasCategories = filterCategories.length > 0;
+    const widgetLoaders: Record<string, () => Promise<void>> = {
+      // KPI Catalog (auto-generated KPI tiles from metrics catalog)
+      kpi_catalog: async () => {
+        const kpiCatalogs = widgetsByKind.kpi_catalog || [];
+        if (!kpiCatalogs.length) return;
+        setKpiCatalogTotals((prev) => {
+          const next = { ...prev };
+          for (const w of kpiCatalogs) next[w.key] = { loading: true, totalsByMetricKey: prev[w.key]?.totalsByMetricKey || {} };
+          return next;
+        });
+        await Promise.all(
+          kpiCatalogs.map(async (w: any) => {
+            try {
+              // Fetch a local snapshot of the catalog so we can compute immediately (avoid setState timing).
+              const catalogMap = Object.keys(catalogByKey || {}).length ? catalogByKey : await fetchCatalogMap();
+              if (!Object.keys(catalogByKey || {}).length && Object.keys(catalogMap).length) setCatalogByKey(catalogMap);
+              const pres = w?.presentation || {};
+              const rawEntityKind = typeof pres?.entityKind === 'string' ? pres.entityKind.trim() : '';
+              const isAutoEntityKind = rawEntityKind === '' || rawEntityKind.toLowerCase() === 'auto';
+              const entityKind = !isAutoEntityKind ? rawEntityKind : '';
+              const onlyWithPoints = pres?.onlyWithPoints === true;
+              const ownerKind = typeof pres?.owner?.kind === 'string' ? pres.owner.kind.trim().toLowerCase() : '';
+              const ownerId = typeof pres?.owner?.id === 'string' ? pres.owner.id.trim() : '';
+              const hasOwnerFilter = Boolean(ownerKind && ownerId);
+              // Support filtering by entity kinds (metrics that support these entity kinds)
+              const filterEntityKinds: string[] = Array.isArray(pres?.filterEntityKinds)
+                ? (pres.filterEntityKinds as any[]).map((x) => String(x || '').trim().toLowerCase()).filter(Boolean)
+                : [];
+              const hasEntityKindsFilter = filterEntityKinds.length > 0;
+              // Support filtering by category
+              const filterCategories: string[] = Array.isArray(pres?.filterCategories)
+                ? (pres.filterCategories as any[]).map((x) => String(x || '').trim().toLowerCase()).filter(Boolean)
+                : [];
+              const hasCategories = filterCategories.length > 0;
 
-            const items = Object.values(catalogMap || {});
-            const filtered = items
-              .filter((it) => {
-                // Filter by owner (e.g., only feature pack metrics)
-                if (hasOwnerFilter) {
-                  const ik = typeof (it as any)?.owner?.kind === 'string' ? String((it as any).owner.kind).trim().toLowerCase() : '';
-                  const iid = typeof (it as any)?.owner?.id === 'string' ? String((it as any).owner.id).trim() : '';
-                  if (ik !== ownerKind || iid !== ownerId) return false;
+              const items = Object.values(catalogMap || {});
+              const filtered = items
+                .filter((it) => {
+                  // Filter by owner (e.g., only feature pack metrics)
+                  if (hasOwnerFilter) {
+                    const ik = typeof (it as any)?.owner?.kind === 'string' ? String((it as any).owner.kind).trim().toLowerCase() : '';
+                    const iid = typeof (it as any)?.owner?.id === 'string' ? String((it as any).owner.id).trim() : '';
+                    if (ik !== ownerKind || iid !== ownerId) return false;
+                  }
+                  // Filter by entity kinds (metrics that support any of these entity kinds)
+                  if (hasEntityKindsFilter) {
+                    const metricEntityKinds = Array.isArray(it.entity_kinds)
+                      ? (it.entity_kinds as any[]).map((x) => String(x || '').trim().toLowerCase())
+                      : [];
+                    const hasMatch = filterEntityKinds.some((ek) => metricEntityKinds.includes(ek));
+                    if (!hasMatch) return false;
+                  }
+                  // Filter by category
+                  if (hasCategories) {
+                    const cat = typeof it.category === 'string' ? it.category.trim().toLowerCase() : '';
+                    if (!filterCategories.includes(cat)) return false;
+                  }
+                  // If entityKind is explicitly set (not auto), filter metrics that support it
+                  if (!isAutoEntityKind) {
+                    const kinds = Array.isArray(it.entity_kinds) ? it.entity_kinds : [];
+                    // If the metric declares supported entity kinds, respect it.
+                    // If it doesn't, we cannot safely assume it works for the chosen entityKind.
+                    if (kinds.length === 0) return false;
+                    if (!kinds.includes(entityKind)) return false;
+                  }
+                  if (onlyWithPoints && Number(it.pointsCount || 0) <= 0) return false;
+                  return true;
+                })
+                .sort((a, b) => String(a.label || a.key).localeCompare(String(b.label || b.key)));
+
+              const t = effectiveTime(w);
+              const totalsByMetricKey: Record<string, number> = {};
+
+              const queries = filtered
+                .map((it) => {
+                  const mk = String(it.key || '').trim();
+                  if (!mk) return null;
+                  const roll = String(it.rollup_strategy || '').toLowerCase();
+                  const timeKind = String(it.time_kind || '').toLowerCase();
+                  const agg: Agg = roll === 'last' || timeKind === 'realtime' || timeKind === 'none' ? 'last' : 'sum';
+                  const ek = isAutoEntityKind ? pickEntityKindForMetric(it) : entityKind;
+                  // If we can't infer entityKind, omit it and let the backend aggregate across all kinds.
+                  const body: any = { metricKey: mk, bucket: 'none', agg, groupByEntityId: true };
+                  if (ek) body.entityKind = ek;
+                  if (t) Object.assign(body, t);
+                  return body;
+                })
+                .filter(Boolean) as any[];
+
+              const CHUNK = 50;
+              for (let i = 0; i < queries.length; i += CHUNK) {
+                const chunk = queries.slice(i, i + CHUNK);
+                const res = await fetchWithAuth('/api/metrics/query-batch', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ queries: chunk }),
+                });
+                const json = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(json?.error || `metrics/query-batch ${res.status}`);
+                const results = Array.isArray(json?.results) ? json.results : [];
+                for (let j = 0; j < chunk.length; j++) {
+                  const q = chunk[j];
+                  const mk = String(q.metricKey || '').trim();
+                  const r = results[j];
+                  const rows = Array.isArray(r?.data) ? r.data : [];
+                  const sum = rows.reduce((acc: number, rr: any) => acc + Number(rr.value ?? 0), 0);
+                  totalsByMetricKey[mk] = Number.isFinite(sum) ? sum : 0;
                 }
-                // Filter by entity kinds (metrics that support any of these entity kinds)
-                if (hasEntityKindsFilter) {
-                  const metricEntityKinds = Array.isArray(it.entity_kinds)
-                    ? (it.entity_kinds as any[]).map((x) => String(x || '').trim().toLowerCase())
-                    : [];
-                  const hasMatch = filterEntityKinds.some((ek) => metricEntityKinds.includes(ek));
-                  if (!hasMatch) return false;
-                }
-                // Filter by category
-                if (hasCategories) {
-                  const cat = typeof it.category === 'string' ? it.category.trim().toLowerCase() : '';
-                  if (!filterCategories.includes(cat)) return false;
-                }
-                // If entityKind is explicitly set (not auto), filter metrics that support it
-                if (!isAutoEntityKind) {
-                  const kinds = Array.isArray(it.entity_kinds) ? it.entity_kinds : [];
-                  // If the metric declares supported entity kinds, respect it.
-                  // If it doesn't, we cannot safely assume it works for the chosen entityKind.
-                  if (kinds.length === 0) return false;
-                  if (!kinds.includes(entityKind)) return false;
-                }
-                if (onlyWithPoints && Number(it.pointsCount || 0) <= 0) return false;
-                return true;
-              })
-              .sort((a, b) => String(a.label || a.key).localeCompare(String(b.label || b.key)));
-
-            const t = effectiveTime(w);
-            const totalsByMetricKey: Record<string, number> = {};
-
-            const queries = filtered
-              .map((it) => {
-                const mk = String(it.key || '').trim();
-                if (!mk) return null;
-                const roll = String(it.rollup_strategy || '').toLowerCase();
-                const timeKind = String(it.time_kind || '').toLowerCase();
-                const agg: Agg = roll === 'last' || timeKind === 'realtime' || timeKind === 'none' ? 'last' : 'sum';
-                const ek = isAutoEntityKind ? pickEntityKindForMetric(it) : entityKind;
-                // If we can't infer entityKind, omit it and let the backend aggregate across all kinds.
-                const body: any = { metricKey: mk, bucket: 'none', agg, groupByEntityId: true };
-                if (ek) body.entityKind = ek;
-                if (t) Object.assign(body, t);
-                return body;
-              })
-              .filter(Boolean) as any[];
-
-            const CHUNK = 50;
-            for (let i = 0; i < queries.length; i += CHUNK) {
-              const chunk = queries.slice(i, i + CHUNK);
-              const res = await fetchWithAuth('/api/metrics/query-batch', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ queries: chunk }),
-              });
-              const json = await res.json().catch(() => ({}));
-              if (!res.ok) throw new Error(json?.error || `metrics/query-batch ${res.status}`);
-              const results = Array.isArray(json?.results) ? json.results : [];
-              for (let j = 0; j < chunk.length; j++) {
-                const q = chunk[j];
-                const mk = String(q.metricKey || '').trim();
-                const r = results[j];
-                const rows = Array.isArray(r?.data) ? r.data : [];
-                const sum = rows.reduce((acc: number, rr: any) => acc + Number(rr.value ?? 0), 0);
-                totalsByMetricKey[mk] = Number.isFinite(sum) ? sum : 0;
               }
+
+              setKpiCatalogTotals((p) => ({ ...p, [w.key]: { loading: false, totalsByMetricKey } }));
+            } catch {
+              setKpiCatalogTotals((p) => ({ ...p, [w.key]: { loading: false, totalsByMetricKey: {} } }));
             }
+          })
+        );
+      },
 
-            setKpiCatalogTotals((p) => ({ ...p, [w.key]: { loading: false, totalsByMetricKey } }));
-          } catch {
-            setKpiCatalogTotals((p) => ({ ...p, [w.key]: { loading: false, totalsByMetricKey: {} } }));
-          }
-        })
-      );
-    }
+      // KPIs
+      kpi: async () => {
+        const kpis = widgetsByKind.kpi || [];
+        if (!kpis.length) return;
+        setKpiValues((prev) => {
+          const next = { ...prev };
+          for (const w of kpis) next[w.key] = { loading: true };
+          return next;
+        });
+        await Promise.all(
+          kpis.map(async (w: any) => {
+            try {
+              // Optional non-metrics value source (e.g., project count from Projects API).
+              const valueSource = w?.presentation?.valueSource;
+              const metricKey = String(w?.query?.metricKey || '');
+              const isProjectCount = metricKey === 'fp.projects.project_count';
+              if (valueSource?.kind === 'api_count' || isProjectCount) {
+                const endpoint = typeof valueSource?.endpoint === 'string' ? valueSource.endpoint : '/api/projects';
+                const totalField = typeof valueSource?.totalField === 'string' ? valueSource.totalField : 'pagination.total';
+                const sep = endpoint.includes('?') ? '&' : '?';
+                const res = await fetch(`${endpoint}${sep}page=1&pageSize=1`);
+                const json = await res.json().catch(() => ({}));
+                const total = Array.isArray(json)
+                  ? json.length
+                  : Number(getByPath(json, totalField) ?? 0);
+                setKpiValues((p) => ({ ...p, [w.key]: { loading: false, value: Number.isFinite(total) ? total : 0 } }));
+                return;
+              }
 
-    // KPIs
-    const kpis = widgets.filter((w: any) => w?.kind === 'kpi');
-    setKpiValues((prev) => {
-      const next = { ...prev };
-      for (const w of kpis) next[w.key] = { loading: true };
-      return next;
-    });
-    await Promise.all(
-      kpis.map(async (w: any) => {
-        try {
-          // Optional non-metrics value source (e.g., project count from Projects API).
-          const valueSource = w?.presentation?.valueSource;
-          const metricKey = String(w?.query?.metricKey || '');
-          const isProjectCount = metricKey === 'fp.projects.project_count';
-          if (valueSource?.kind === 'api_count' || isProjectCount) {
-            const endpoint = typeof valueSource?.endpoint === 'string' ? valueSource.endpoint : '/api/projects';
-            const totalField = typeof valueSource?.totalField === 'string' ? valueSource.totalField : 'pagination.total';
-            const sep = endpoint.includes('?') ? '&' : '?';
-            const res = await fetch(`${endpoint}${sep}page=1&pageSize=1`);
-            const json = await res.json().catch(() => ({}));
-            const total = Array.isArray(json)
-              ? json.length
-              : Number(getByPath(json, totalField) ?? 0);
-            setKpiValues((p) => ({ ...p, [w.key]: { loading: false, value: Number.isFinite(total) ? total : 0 } }));
-            return;
-          }
+              // Generic non-metrics value source (extract a single numeric field from an endpoint).
+              if (valueSource?.kind === 'api_value') {
+                const endpoint = typeof valueSource?.endpoint === 'string' ? valueSource.endpoint : '';
+                const valueField = typeof valueSource?.valueField === 'string' ? valueSource.valueField : '';
+                if (!endpoint || !valueField) {
+                  setKpiValues((p) => ({ ...p, [w.key]: { loading: false, value: 0 } }));
+                  return;
+                }
+                const res = await fetchWithAuth(endpoint);
+                const json = await res.json().catch(() => ({}));
+                const raw = getByPath(json, valueField);
+                const v = Number(raw ?? 0);
+                setKpiValues((p) => ({ ...p, [w.key]: { loading: false, value: Number.isFinite(v) ? v : 0 } }));
+                return;
+              }
 
-          // Generic non-metrics value source (extract a single numeric field from an endpoint).
-          if (valueSource?.kind === 'api_value') {
-            const endpoint = typeof valueSource?.endpoint === 'string' ? valueSource.endpoint : '';
-            const valueField = typeof valueSource?.valueField === 'string' ? valueSource.valueField : '';
-            if (!endpoint || !valueField) {
-              setKpiValues((p) => ({ ...p, [w.key]: { loading: false, value: 0 } }));
-              return;
-            }
-            const res = await fetchWithAuth(endpoint);
-            const json = await res.json().catch(() => ({}));
-            const raw = getByPath(json, valueField);
-            const v = Number(raw ?? 0);
-            setKpiValues((p) => ({ ...p, [w.key]: { loading: false, value: Number.isFinite(v) ? v : 0 } }));
-            return;
-          }
+              // Sum the latest value per entity (useful for totals like wishlist_cumulative_total across projects).
+              if (valueSource?.kind === 'metrics_sum_last_per_entity' && typeof valueSource.metricKey === 'string') {
+                const t = effectiveTime(w); // usually null for all_time
+                const body: any = {
+                  metricKey: String(valueSource.metricKey),
+                  bucket: 'none',
+                  agg: 'last',
+                  entityKind: typeof valueSource.entityKind === 'string' ? valueSource.entityKind : (w?.query?.entityKind || undefined),
+                  groupByEntityId: true,
+                };
+                if (t) Object.assign(body, t);
+                const res = await fetchWithAuth('/api/metrics/query', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify(body),
+                });
+                const json = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(json?.error || `metrics/query ${res.status}`);
+                const rows = Array.isArray(json.data) ? json.data : [];
+                const sum = rows.reduce((acc: number, r: any) => acc + Number(r.value ?? 0), 0);
+                setKpiValues((p) => ({ ...p, [w.key]: { loading: false, value: Number.isFinite(sum) ? sum : 0 } }));
+                return;
+              }
 
-          // Sum the latest value per entity (useful for totals like wishlist_cumulative_total across projects).
-          if (valueSource?.kind === 'metrics_sum_last_per_entity' && typeof valueSource.metricKey === 'string') {
-            const t = effectiveTime(w); // usually null for all_time
-            const body: any = {
-              metricKey: String(valueSource.metricKey),
-              bucket: 'none',
-              agg: 'last',
-              entityKind: typeof valueSource.entityKind === 'string' ? valueSource.entityKind : (w?.query?.entityKind || undefined),
-              groupByEntityId: true,
-            };
-            if (t) Object.assign(body, t);
-            const res = await fetchWithAuth('/api/metrics/query', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(body),
-            });
-            const json = await res.json().catch(() => ({}));
-            if (!res.ok) throw new Error(json?.error || `metrics/query ${res.status}`);
-            const rows = Array.isArray(json.data) ? json.data : [];
-            const sum = rows.reduce((acc: number, r: any) => acc + Number(r.value ?? 0), 0);
-            setKpiValues((p) => ({ ...p, [w.key]: { loading: false, value: Number.isFinite(sum) ? sum : 0 } }));
-            return;
-          }
+              // Generic aggregation per entity, then summed across entities.
+              // Example: wishlist_net_change sum across all projects (all_time).
+              if (valueSource?.kind === 'metrics_sum_agg_per_entity' && typeof valueSource.metricKey === 'string') {
+                const t = effectiveTime(w);
+                const agg = typeof valueSource.agg === 'string' ? valueSource.agg : 'sum';
+                const body: any = {
+                  metricKey: String(valueSource.metricKey),
+                  bucket: 'none',
+                  agg,
+                  entityKind: typeof valueSource.entityKind === 'string' ? valueSource.entityKind : (w?.query?.entityKind || undefined),
+                  groupByEntityId: true,
+                };
+                if (t) Object.assign(body, t);
+                const res = await fetchWithAuth('/api/metrics/query', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify(body),
+                });
+                const json = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(json?.error || `metrics/query ${res.status}`);
+                const rows = Array.isArray(json.data) ? json.data : [];
+                const sum = rows.reduce((acc: number, r: any) => acc + Number(r.value ?? 0), 0);
+                setKpiValues((p) => ({ ...p, [w.key]: { loading: false, value: Number.isFinite(sum) ? sum : 0 } }));
+                return;
+              }
 
-          // Generic aggregation per entity, then summed across entities.
-          // Example: wishlist_net_change sum across all projects (all_time).
-          if (valueSource?.kind === 'metrics_sum_agg_per_entity' && typeof valueSource.metricKey === 'string') {
-            const t = effectiveTime(w);
-            const agg = typeof valueSource.agg === 'string' ? valueSource.agg : 'sum';
-            const body: any = {
-              metricKey: String(valueSource.metricKey),
-              bucket: 'none',
-              agg,
-              entityKind: typeof valueSource.entityKind === 'string' ? valueSource.entityKind : (w?.query?.entityKind || undefined),
-              groupByEntityId: true,
-            };
-            if (t) Object.assign(body, t);
-            const res = await fetchWithAuth('/api/metrics/query', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(body),
-            });
-            const json = await res.json().catch(() => ({}));
-            if (!res.ok) throw new Error(json?.error || `metrics/query ${res.status}`);
-            const rows = Array.isArray(json.data) ? json.data : [];
-            const sum = rows.reduce((acc: number, r: any) => acc + Number(r.value ?? 0), 0);
-            setKpiValues((p) => ({ ...p, [w.key]: { loading: false, value: Number.isFinite(sum) ? sum : 0 } }));
-            return;
-          }
+              // Sum of latest-per-entity across multiple metric keys (blended totals, e.g. followers across platforms).
+              if (valueSource?.kind === 'metrics_sum_last_per_entity_multi' && Array.isArray(valueSource.metricKeys)) {
+                const t = effectiveTime(w); // usually null for all_time
+                const entityKind = typeof valueSource.entityKind === 'string' ? valueSource.entityKind : (w?.query?.entityKind || undefined);
+                const keys = (valueSource.metricKeys as any[]).map((x) => String(x || '').trim()).filter(Boolean);
+                let sumAll = 0;
+                for (const mk of keys) {
+                  const body: any = { metricKey: mk, bucket: 'none', agg: 'last', entityKind, groupByEntityId: true };
+                  if (t) Object.assign(body, t);
+                  const res = await fetchWithAuth('/api/metrics/query', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+                  const json = await res.json().catch(() => ({}));
+                  if (!res.ok) throw new Error(json?.error || `metrics/query ${res.status}`);
+                  const rows = Array.isArray(json.data) ? json.data : [];
+                  sumAll += rows.reduce((acc: number, r: any) => acc + Number(r.value ?? 0), 0);
+                }
+                setKpiValues((p) => ({ ...p, [w.key]: { loading: false, value: Number.isFinite(sumAll) ? sumAll : 0 } }));
+                return;
+              }
 
-          // Sum of latest-per-entity across multiple metric keys (blended totals, e.g. followers across platforms).
-          if (valueSource?.kind === 'metrics_sum_last_per_entity_multi' && Array.isArray(valueSource.metricKeys)) {
-            const t = effectiveTime(w); // usually null for all_time
-            const entityKind = typeof valueSource.entityKind === 'string' ? valueSource.entityKind : (w?.query?.entityKind || undefined);
-            const keys = (valueSource.metricKeys as any[]).map((x) => String(x || '').trim()).filter(Boolean);
-            let sumAll = 0;
-            for (const mk of keys) {
-              const body: any = { metricKey: mk, bucket: 'none', agg: 'last', entityKind, groupByEntityId: true };
+              const t = effectiveTime(w);
+              const body = { ...(w.query || {}) };
               if (t) Object.assign(body, t);
               const res = await fetchWithAuth('/api/metrics/query', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
               const json = await res.json().catch(() => ({}));
               if (!res.ok) throw new Error(json?.error || `metrics/query ${res.status}`);
               const rows = Array.isArray(json.data) ? json.data : [];
-              sumAll += rows.reduce((acc: number, r: any) => acc + Number(r.value ?? 0), 0);
-            }
-            setKpiValues((p) => ({ ...p, [w.key]: { loading: false, value: Number.isFinite(sumAll) ? sumAll : 0 } }));
-            return;
-          }
+              const v = Number(rows[0]?.value ?? 0);
 
-          const t = effectiveTime(w);
-          const body = { ...(w.query || {}) };
-          if (t) Object.assign(body, t);
-          const res = await fetchWithAuth('/api/metrics/query', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+              let prev = undefined as number | undefined;
+              if (t && w?.presentation?.compare === 'previous_period') {
+                const start = new Date(t.start);
+                const end = new Date(t.end);
+                const dur = end.getTime() - start.getTime();
+                const prevEnd = new Date(start.getTime() - 1);
+                const prevStart = new Date(prevEnd.getTime() - dur);
+                const prevBody = { ...(w.query || {}), start: prevStart.toISOString(), end: prevEnd.toISOString() };
+                const r2 = await fetchWithAuth('/api/metrics/query', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(prevBody) });
+                const j2 = await r2.json().catch(() => ({}));
+                const rr = Array.isArray(j2.data) ? j2.data : [];
+                prev = Number(rr[0]?.value ?? 0);
+              }
+
+              setKpiValues((p) => ({ ...p, [w.key]: { loading: false, value: Number.isFinite(v) ? v : 0, prev } }));
+            } catch (err) {
+              console.warn(`[Dashboard] KPI "${w.key}" failed:`, err);
+              setKpiValues((p) => ({ ...p, [w.key]: { loading: false, value: 0, error: String(err) } }));
+            }
+          })
+        );
+      },
+
+      // Gauge (ratio/value vs max)
+      gauge: async () => {
+        const gauges = [...(widgetsByKind.gauge || []), ...(widgetsByKind.semi_gauge || [])];
+        if (!gauges.length) return;
+        setGaugeValues((prev) => {
+          const next = { ...prev };
+          for (const w of gauges) next[w.key] = { loading: true, value: prev[w.key]?.value, max: prev[w.key]?.max, min: prev[w.key]?.min };
+          return next;
+        });
+
+        const fetchMetricValue = async (q: any, t: { start: string; end: string } | null): Promise<number> => {
+          const body = { ...(q || {}) };
+          const mk = typeof body.metricKey === 'string' ? body.metricKey.trim() : '';
+          if (!mk) return 0;
+          if (!body.bucket) body.bucket = 'none';
+          if (!body.agg) body.agg = 'sum';
+          if (t) {
+            body.start = t.start;
+            body.end = t.end;
+          }
+          const res = await fetchWithAuth('/api/metrics/query', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          });
           const json = await res.json().catch(() => ({}));
           if (!res.ok) throw new Error(json?.error || `metrics/query ${res.status}`);
           const rows = Array.isArray(json.data) ? json.data : [];
           const v = Number(rows[0]?.value ?? 0);
+          return Number.isFinite(v) ? v : 0;
+        };
 
-          let prev = undefined as number | undefined;
-          if (t && w?.presentation?.compare === 'previous_period') {
-            const start = new Date(t.start);
-            const end = new Date(t.end);
-            const dur = end.getTime() - start.getTime();
-            const prevEnd = new Date(start.getTime() - 1);
-            const prevStart = new Date(prevEnd.getTime() - dur);
-            const prevBody = { ...(w.query || {}), start: prevStart.toISOString(), end: prevEnd.toISOString() };
-            const r2 = await fetchWithAuth('/api/metrics/query', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(prevBody) });
-            const j2 = await r2.json().catch(() => ({}));
-            const rr = Array.isArray(j2.data) ? j2.data : [];
-            prev = Number(rr[0]?.value ?? 0);
-          }
+        await Promise.all(
+          gauges.map(async (w: any) => {
+            try {
+              const pres = w?.presentation || {};
+              const t = effectiveTime(w);
+              const min = Number.isFinite(Number(pres.min)) ? Number(pres.min) : 0;
+              const value = await fetchMetricValue(w?.query, t);
 
-          setKpiValues((p) => ({ ...p, [w.key]: { loading: false, value: Number.isFinite(v) ? v : 0, prev } }));
-        } catch (err) {
-          console.warn(`[Dashboard] KPI "${w.key}" failed:`, err);
-          setKpiValues((p) => ({ ...p, [w.key]: { loading: false, value: 0, error: String(err) } }));
-        }
-      })
-    );
-
-    // Pie
-    const pies = widgets.filter((w: any) => w?.kind === 'pie');
-    setPieSlices((prev) => {
-      const next = { ...prev };
-      for (const w of pies) next[w.key] = { loading: true, slices: prev[w.key]?.slices || [] };
-      return next;
-    });
-    await Promise.all(
-      pies.map(async (w: any) => {
-        try {
-          const block = normalizePieBlock({
-            title: String(w.title || 'Pie'),
-            format: (w?.presentation?.format === 'usd') ? 'usd' : 'number',
-            time: w?.time === 'all_time' ? 'all_time' : 'inherit',
-            query: { ...(w.query || {}) },
-            groupByKey: String(w?.presentation?.groupByKey || 'region'),
-            labelKey: String(w?.presentation?.labelKey || ''),
-            rawKey: String(w?.presentation?.rawKey || ''),
-            topN: Number(w?.presentation?.topN || 5),
-            otherLabel: String(w?.presentation?.otherLabel || 'Other'),
-          });
-          const out = await runPieBlock({ block, timeRange: effectiveTime(w) });
-          setPieSlices((p) => ({ ...p, [w.key]: { loading: false, slices: out.slices, otherLabel: out.otherLabel } }));
-        } catch {
-          setPieSlices((p) => ({ ...p, [w.key]: { loading: false, slices: [], otherLabel: String(w?.presentation?.otherLabel || 'Other') } }));
-        }
-      })
-    );
-
-    // API Pie (non-metrics grouped pies, e.g. CRM pipeline stage breakdown)
-    const apiPies = widgets.filter((w: any) => w?.kind === 'api_pie');
-    if (apiPies.length) {
-      setApiPieSlices((prev) => {
-        const next = { ...prev };
-        for (const w of apiPies) next[w.key] = { loading: true, slices: prev[w.key]?.slices || [] };
-        return next;
-      });
-      await Promise.all(
-        apiPies.map(async (w: any) => {
-          try {
-            const pres = w?.presentation || {};
-            const endpoint = String(pres.endpoint || '').trim();
-            if (!endpoint) throw new Error('Missing api_pie.presentation.endpoint');
-            const res = await fetchWithAuth(endpoint);
-            const json = await res.json().catch(() => ({}));
-            if (!res.ok) throw new Error(json?.error || `api_pie fetch ${res.status}`);
-
-            const itemsField = String(pres.itemsField || 'items');
-            const labelField = String(pres.labelField || 'label');
-            const valueField = String(pres.valueField || 'value');
-            const rawField = String(pres.rawField || labelField);
-            const hrefTemplate = typeof pres.hrefTemplate === 'string' ? pres.hrefTemplate : '';
-
-            const topN = Math.max(1, Math.min(25, Number(pres.topN || 8) || 8));
-            const otherLabel = String(pres.otherLabel || 'Other');
-
-            const items = getByPath(json, itemsField);
-            const arr = Array.isArray(items) ? items : [];
-            const normalized = arr
-              .map((it: any) => ({
-                label: String(getByPath(it, labelField) ?? 'Unknown'),
-                raw: getByPath(it, rawField),
-                value: Number(getByPath(it, valueField) ?? 0),
-                href: hrefTemplate ? applyTemplate(hrefTemplate, it) : '',
-              }))
-              .map((r: any) => ({ ...r, value: Number.isFinite(r.value) ? r.value : 0 }))
-              .sort((a: any, b: any) => b.value - a.value);
-
-            const top = normalized.slice(0, topN);
-            const otherSum = normalized.slice(topN).reduce((acc: number, r: any) => acc + (Number.isFinite(r.value) ? r.value : 0), 0);
-            const slices = [
-              ...top.map((r: any, idx: number) => ({ ...r, color: palette(idx) })),
-              ...(otherSum > 0 ? [{ label: otherLabel, raw: '__other__', value: otherSum, color: '#94a3b8', href: '' }] : []),
-            ];
-
-            setApiPieSlices((p) => ({ ...p, [w.key]: { loading: false, slices, otherLabel, error: undefined } }));
-          } catch (e: any) {
-            setApiPieSlices((p) => ({
-              ...p,
-              [w.key]: {
-                loading: false,
-                slices: [],
-                otherLabel: String(w?.presentation?.otherLabel || 'Other'),
-                error: String(e?.message || 'Failed to load'),
-              },
-            }));
-          }
-        })
-      );
-    }
-
-    // API Table (non-metrics tabular blocks, e.g. stalled opportunities)
-    const apiTableWidgets = widgets.filter((w: any) => w?.kind === 'api_table');
-    if (apiTableWidgets.length) {
-      setApiTables((prev) => {
-        const next = { ...prev };
-        for (const w of apiTableWidgets) next[w.key] = { loading: true, rows: prev[w.key]?.rows || [], total: prev[w.key]?.total };
-        return next;
-      });
-      await Promise.all(
-        apiTableWidgets.map(async (w: any) => {
-          try {
-            const pres = w?.presentation || {};
-            const endpoint = String(pres.endpoint || '').trim();
-            if (!endpoint) throw new Error('Missing api_table.presentation.endpoint');
-            const res = await fetchWithAuth(endpoint);
-            const json = await res.json().catch(() => ({}));
-            if (!res.ok) throw new Error(json?.error || `api_table fetch ${res.status}`);
-
-            const itemsField = String(pres.itemsField || 'items');
-            const totalField = typeof pres.totalField === 'string' ? pres.totalField : '';
-            const rows = Array.isArray(getByPath(json, itemsField)) ? (getByPath(json, itemsField) as any[]) : [];
-            const total = totalField ? Number(getByPath(json, totalField) ?? 0) : undefined;
-            setApiTables((p) => ({ ...p, [w.key]: { loading: false, rows, total: (total != null && Number.isFinite(total)) ? total : undefined } }));
-          } catch {
-            setApiTables((p) => ({ ...p, [w.key]: { loading: false, rows: [], total: undefined } }));
-          }
-        })
-      );
-    }
-
-    // Metric Table (metrics drilldown rendered as a table; supports computed metrics too)
-    const metricTableWidgets = widgets.filter((w: any) => w?.kind === 'metric_table');
-    if (metricTableWidgets.length) {
-      setMetricTables((prev) => {
-        const next = { ...prev };
-        for (const w of metricTableWidgets) next[w.key] = { loading: true, rows: prev[w.key]?.rows || [], total: prev[w.key]?.total };
-        return next;
-      });
-      await Promise.all(
-        metricTableWidgets.map(async (w: any) => {
-          try {
-            const pres = w?.presentation || {};
-            const pageSize = Math.max(1, Math.min(100, Number(pres.pageSize || 10) || 10));
-            const t = effectiveTime(w);
-            const q = { ...(w.query || {}) };
-            // pointFilter: use query fields (metricKey + dims + params) and attach time range if present
-            const pointFilter: any = {
-              metricKey: String(q.metricKey || '').trim(),
-            };
-            if (!pointFilter.metricKey) throw new Error('Missing query.metricKey for metric_table');
-            if (q.entityKind) pointFilter.entityKind = q.entityKind;
-            if (q.entityId) pointFilter.entityId = q.entityId;
-            if (Array.isArray(q.entityIds)) pointFilter.entityIds = q.entityIds;
-            if (q.dataSourceId) pointFilter.dataSourceId = q.dataSourceId;
-            if (q.sourceGranularity) pointFilter.sourceGranularity = q.sourceGranularity;
-            if (q.params && typeof q.params === 'object') pointFilter.params = q.params;
-            if (q.dimensions && typeof q.dimensions === 'object') pointFilter.dimensions = q.dimensions;
-            if (t) {
-              pointFilter.start = t.start;
-              pointFilter.end = t.end;
-            }
-
-            const res = await fetchWithAuth('/api/metrics/drilldown', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ pointFilter, page: 1, pageSize, includeContributors: false }),
-            });
-            const json = await res.json().catch(() => ({}));
-            if (!res.ok) throw new Error(json?.error || `metrics/drilldown ${res.status}`);
-
-            const points = Array.isArray(json?.points) ? json.points : [];
-            const rows = points.map((p: any) => ({
-              id: String(p?.entityId || p?.id || ''),
-              date: p?.date,
-              value: p?.value,
-              entityKind: p?.entityKind,
-              entityId: p?.entityId,
-              dataSourceId: p?.dataSourceId,
-              ...(p?.dimensions && typeof p.dimensions === 'object' ? p.dimensions : {}),
-            }));
-            const total = Number(json?.pagination?.total ?? rows.length);
-            setMetricTables((p) => ({ ...p, [w.key]: { loading: false, rows, total: Number.isFinite(total) ? total : undefined } }));
-          } catch {
-            setMetricTables((p) => ({ ...p, [w.key]: { loading: false, rows: [], total: undefined } }));
-          }
-        })
-      );
-    }
-
-    // Line (multi series)
-    const lines = widgets.filter((w: any) => w?.kind === 'line');
-    setLineSeries((prev) => {
-      const next = { ...prev };
-      for (const w of lines) next[w.key] = { loading: true };
-      return next;
-    });
-
-    await Promise.all(
-      lines.map(async (w: any) => {
-        try {
-          const t = effectiveTime(w);
-          if (!t) throw new Error('Line widgets require time range');
-          const bucketOverride: Bucket | undefined = lineBucketByWidgetKey[w.key];
-
-          // Explicit series: [{ key, query }]
-          if (Array.isArray(w.series) && w.series.length > 0) {
-            const out: Array<{ id: string; label: string; color: string; points: Array<{ t: number; v: number; bucketIso?: string }>; drill?: { baseQuery: any; rowContextBase?: any; titlePrefix?: string } | null }> = [];
-            for (let i = 0; i < w.series.length; i++) {
-              const s = w.series[i];
-              const body = { ...(s.query || {}), start: t.start, end: t.end };
-              const res = await fetchWithAuth('/api/metrics/query', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-              const json = await res.json().catch(() => ({}));
-              if (!res.ok) throw new Error(json?.error || `metrics/query ${res.status}`);
-              const rows = Array.isArray(json.data) ? json.data : [];
-              const pts = rows
-                .map((r: any) => ({ t: r.bucket ? new Date(r.bucket).getTime() : NaN, v: Number(r.value ?? 0), bucketIso: typeof r.bucket === 'string' ? r.bucket : undefined }))
-                .filter((p: any) => Number.isFinite(p.t))
-                .sort((a: any, b: any) => a.t - b.t);
-              out.push({
-                id: `explicit_${w.key}_${i}`,
-                label: String(s.key || `Series ${i + 1}`),
-                color: palette(i),
-                points: pts,
-                drill: { baseQuery: body, rowContextBase: {}, titlePrefix: String(w.title || 'Line') },
-              });
-            }
-            setLineSeries((p) => ({ ...p, [w.key]: { loading: false, series: out } }));
-            return;
-          }
-
-          // Computed top-N entities
-          if (w.seriesSpec?.mode === 'top_n_entities') {
-            const spec = w.seriesSpec;
-            const metricKey = String(spec.metricKey || '');
-            const entityKind = String(spec.entityKind || 'project');
-            const bucket = String(bucketOverride || spec.bucket || 'day');
-            const agg = String(spec.agg || 'sum');
-            const topN = Number(spec.topN || 5);
-            const includeOther = spec.includeOther !== false;
-            const otherLabel = String(spec.otherLabel || 'Other');
-            const cumulative = Boolean(spec.cumulative);
-
-            // totals for ranking
-            const totalsRes = await fetchWithAuth('/api/metrics/query', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ metricKey, bucket: 'none', agg, entityKind, groupByEntityId: true, start: t.start, end: t.end }),
-            });
-            const totalsJson = await totalsRes.json().catch(() => ({}));
-            const totalsRows = Array.isArray(totalsJson.data) ? totalsJson.data : [];
-            const ranked = totalsRows
-              .map((r: any) => ({ entityId: String(r.entityId || ''), value: Number(r.value ?? 0) }))
-              .filter((r: any) => r.entityId)
-              .sort((a: any, b: any) => b.value - a.value);
-            const topIds = ranked.slice(0, topN).map((r: any) => r.entityId);
-
-            const fetchedNames = spec.labelSource?.source === 'projects' ? await fetchProjectNames(topIds) : {};
-
-            // series for top ids
-            const seriesRes = await fetchWithAuth('/api/metrics/query', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ metricKey, bucket, agg, entityKind, groupByEntityId: true, entityIds: topIds, start: t.start, end: t.end }),
-            });
-            const seriesJson = await seriesRes.json().catch(() => ({}));
-            const seriesRows = Array.isArray(seriesJson.data) ? seriesJson.data : [];
-
-            // total series (for other)
-            const totalRes = await fetchWithAuth('/api/metrics/query', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ metricKey, bucket, agg, entityKind, start: t.start, end: t.end }),
-            });
-            const totalJson = await totalRes.json().catch(() => ({}));
-            const totalRows = Array.isArray(totalJson.data) ? totalJson.data : [];
-            const buckets: number[] = totalRows
-              .map((r: any) => (r.bucket ? new Date(r.bucket).getTime() : NaN))
-              .filter((x: any) => Number.isFinite(x))
-              .sort((a: any, b: any) => a - b);
-
-            const totalByT = new Map<number, number>();
-            const bucketIsoByT = new Map<number, string>();
-            for (const r of totalRows) {
-              const tt = r.bucket ? new Date(r.bucket).getTime() : NaN;
-              if (!Number.isFinite(tt)) continue;
-              totalByT.set(tt, Number(r.value ?? 0));
-              if (typeof r.bucket === 'string') bucketIsoByT.set(tt, r.bucket);
-            }
-
-            const byEntity = new Map<string, Map<number, number>>();
-            for (const r of seriesRows) {
-              const id = String(r.entityId || '');
-              const tt = r.bucket ? new Date(r.bucket).getTime() : NaN;
-              if (!id || !Number.isFinite(tt)) continue;
-              if (!byEntity.has(id)) byEntity.set(id, new Map());
-              byEntity.get(id)!.set(tt, Number(r.value ?? 0));
-            }
-
-            const baseQuery = { metricKey, bucket, agg, entityKind, groupByEntityId: true, entityIds: topIds, start: t.start, end: t.end };
-            const out: Array<{ id: string; label: string; color: string; points: Array<{ t: number; v: number; bucketIso?: string }>; drill?: { baseQuery: any; rowContextBase?: any; titlePrefix?: string } | null }> = [];
-            topIds.forEach((id: string, idx: number) => {
-              const m = byEntity.get(id) || new Map();
-              const label = spec.labelSource?.source === 'projects' ? (fetchedNames[id] || projectNames[id] || id) : id;
-              out.push({
-                id: `ent_${w.key}_${id}`,
-                label,
-                color: palette(idx),
-                points: buckets.map((tt: number) => ({ t: tt, v: Number(m.get(tt) ?? 0), bucketIso: bucketIsoByT.get(tt) })),
-                drill: { baseQuery, rowContextBase: { entityId: id }, titlePrefix: String(w.title || 'Line') },
-              });
-            });
-
-            if (includeOther) {
-              // "Other" = all entities except topIds. We approximate by enumerating entityIds beyond topN when feasible.
-              const otherIds = ranked.slice(topN).map((r: any) => r.entityId).filter(Boolean);
-              const otherIdsLimited = otherIds.slice(0, 1000);
-              const otherBaseQuery = otherIdsLimited.length
-                ? { metricKey, bucket, agg, entityKind, groupByEntityId: true, entityIds: otherIdsLimited, start: t.start, end: t.end }
-                : null;
-              out.push({
-                id: `other_${w.key}`,
-                label: otherLabel,
-                color: '#94a3b8',
-                points: buckets.map((tt: number) => {
-                  const total = Number(totalByT.get(tt) ?? 0);
-                  const sumTop = topIds.reduce((acc: number, id: string) => acc + Number(byEntity.get(id)?.get(tt) ?? 0), 0);
-                  return { t: tt, v: Math.max(0, total - sumTop), bucketIso: bucketIsoByT.get(tt) };
-                }),
-                drill: otherBaseQuery ? { baseQuery: otherBaseQuery, rowContextBase: {}, titlePrefix: String(w.title || 'Line') } : null,
-              });
-            }
-
-            if (cumulative) {
-              for (const s of out) {
-                let acc = 0;
-                s.points = s.points.map((p) => {
-                  acc += p.v;
-                  return { ...p, v: acc };
-                });
+              let max: number | undefined = undefined;
+              if (pres?.maxQuery && typeof pres.maxQuery === 'object') {
+                max = await fetchMetricValue(pres.maxQuery, t);
+              } else if (Number.isFinite(Number(pres?.maxValue))) {
+                max = Number(pres.maxValue);
+              } else if (typeof pres?.maxMetricKey === 'string' && pres.maxMetricKey.trim()) {
+                max = await fetchMetricValue({ metricKey: pres.maxMetricKey.trim() }, t);
               }
+
+              if (!Number.isFinite(Number(max))) max = 0;
+              setGaugeValues((p) => ({ ...p, [w.key]: { loading: false, value, max, min } }));
+            } catch (err) {
+              console.warn(`[Dashboard] Gauge "${w.key}" failed:`, err);
+              setGaugeValues((p) => ({ ...p, [w.key]: { loading: false, value: 0, max: 0, min: 0 } }));
             }
+          })
+        );
+      },
 
-            setLineSeries((p) => ({ ...p, [w.key]: { loading: false, series: out } }));
-            return;
-          }
+      // Tabs (multi-option time series)
+      tabs: async () => {
+        const tabsWidgets = widgetsByKind.tabs || [];
+        if (!tabsWidgets.length) return;
+        setTabsData((prev) => {
+          const next = { ...prev };
+          for (const w of tabsWidgets) next[w.key] = { loading: true, tabs: prev[w.key]?.tabs || [] };
+          return next;
+        });
+        await Promise.all(
+          tabsWidgets.map(async (w: any) => {
+            try {
+              const t = effectiveTime(w) || range;
+              const tabs = Array.isArray(w?.tabs) ? w.tabs : [];
+              const outTabs: Array<{ key: string; label: string; icon?: string; bucket: Bucket; total: number; points: Array<{ t: number; v: number; bucketIso?: string }>; format: 'number' | 'usd'; summaryLabel?: string; maxPoints: number }> = [];
 
-          // Computed top-N entities from blended metrics (e.g. followers = sum of last across platforms)
-          if (w.seriesSpec?.mode === 'top_n_entities_multi_metrics') {
-            const spec = w.seriesSpec;
-            const entityKind = String(spec.entityKind || 'project');
-            const metricKeys = Array.isArray(spec.metricKeys) ? spec.metricKeys.map((x: any) => String(x || '').trim()).filter(Boolean) : [];
-            const bucket = String(bucketOverride || spec.bucket || 'day');
-            const agg = String(spec.agg || 'last');
-            const topN = Number(spec.topN || 5);
-            const includeOther = spec.includeOther !== false;
-            const otherLabel = String(spec.otherLabel || 'Other');
-            const cumulative = Boolean(spec.cumulative);
+              for (const tab of tabs) {
+                const key = String(tab?.key || tab?.label || '').trim();
+                if (!key) continue;
+                const label = String(tab?.label || key);
+                const icon = typeof tab?.icon === 'string' ? tab.icon : undefined;
+                const pres = tab?.presentation || {};
+                const format = (pres?.format === 'usd') ? 'usd' : 'number';
+                const summaryLabel = typeof pres?.summaryLabel === 'string' ? pres.summaryLabel : undefined;
+                const maxPoints = Math.max(3, Math.min(12, Number(pres?.maxPoints || 8)));
 
-            // 1) totals by entityId across all metric keys for ranking
-            const totalsByEntity = new Map<string, number>();
-            for (const mk of metricKeys) {
-              const totalsRes = await fetchWithAuth('/api/metrics/query', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ metricKey: mk, bucket: 'none', agg, entityKind, groupByEntityId: true, start: t.start, end: t.end }),
-              });
-              const totalsJson = await totalsRes.json().catch(() => ({}));
-              const totalsRows = Array.isArray(totalsJson.data) ? totalsJson.data : [];
-              for (const r of totalsRows) {
-                const id = String(r.entityId || '');
-                if (!id) continue;
-                totalsByEntity.set(id, (totalsByEntity.get(id) || 0) + Number(r.value ?? 0));
-              }
-            }
+                const q = { ...(tab?.query || {}) };
+                const bucket = (String(q.bucket || pres?.bucket || 'day') as Bucket);
+                q.bucket = bucket;
+                q.agg = q.agg || 'sum';
+                q.start = t.start;
+                q.end = t.end;
 
-            const ranked = Array.from(totalsByEntity.entries())
-              .map(([entityId, value]) => ({ entityId, value }))
-              .sort((a, b) => b.value - a.value);
-            const topIds = ranked.slice(0, topN).map((r) => r.entityId);
-
-            const fetchedNames = spec.labelSource?.source === 'projects' ? await fetchProjectNames(topIds) : {};
-
-            // 2) per-bucket series for top IDs: sum across metric keys
-            const byEntity = new Map<string, Map<number, number>>();
-            const bucketsSet = new Set<number>();
-            const bucketIsoByT = new Map<number, string>();
-
-            for (const mk of metricKeys) {
-              const seriesRes = await fetchWithAuth('/api/metrics/query', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ metricKey: mk, bucket, agg, entityKind, groupByEntityId: true, entityIds: topIds, start: t.start, end: t.end }),
-              });
-              const seriesJson = await seriesRes.json().catch(() => ({}));
-              const seriesRows = Array.isArray(seriesJson.data) ? seriesJson.data : [];
-              for (const r of seriesRows) {
-                const id = String(r.entityId || '');
-                const tt = r.bucket ? new Date(r.bucket).getTime() : NaN;
-                if (!id || !Number.isFinite(tt)) continue;
-                bucketsSet.add(tt);
-                if (typeof r.bucket === 'string' && !bucketIsoByT.has(tt)) bucketIsoByT.set(tt, r.bucket);
-                if (!byEntity.has(id)) byEntity.set(id, new Map());
-                byEntity.get(id)!.set(tt, (byEntity.get(id)!.get(tt) || 0) + Number(r.value ?? 0));
-              }
-            }
-
-            const buckets = Array.from(bucketsSet.values()).sort((a, b) => a - b);
-
-            // 3) optional "Other" = all entities minus top, computed via groupByEntityId across all entities
-            let otherSeries: Array<{ t: number; v: number }> | null = null;
-            if (includeOther) {
-              // compute blended total per bucket across all entities
-              const totalByBucket = new Map<number, number>();
-              for (const mk of metricKeys) {
                 const res = await fetchWithAuth('/api/metrics/query', {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ metricKey: mk, bucket, agg, entityKind, groupByEntityId: true, start: t.start, end: t.end }),
+                  body: JSON.stringify(q),
                 });
                 const json = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(json?.error || `metrics/query ${res.status}`);
                 const rows = Array.isArray(json.data) ? json.data : [];
-                for (const r of rows) {
+                const points = rows
+                  .map((r: any) => ({
+                    t: r.bucket ? new Date(r.bucket).getTime() : NaN,
+                    v: Number(r.value ?? 0),
+                    bucketIso: typeof r.bucket === 'string' ? r.bucket : undefined,
+                  }))
+                  .filter((p: any) => Number.isFinite(p.t))
+                  .sort((a: any, b: any) => a.t - b.t);
+                const total = points.reduce((acc: number, p: { v: number }) => acc + Number(p.v ?? 0), 0);
+                outTabs.push({ key, label, icon, bucket, total, points, format, summaryLabel, maxPoints });
+              }
+
+              setTabsData((p) => ({ ...p, [w.key]: { loading: false, tabs: outTabs } }));
+            } catch (err) {
+              console.warn(`[Dashboard] Tabs "${w.key}" failed:`, err);
+              setTabsData((p) => ({ ...p, [w.key]: { loading: false, tabs: [] } }));
+            }
+          })
+        );
+      },
+
+      // Pie
+      pie: async () => {
+        const pies = widgetsByKind.pie || [];
+        if (!pies.length) return;
+        setPieSlices((prev) => {
+          const next = { ...prev };
+          for (const w of pies) next[w.key] = { loading: true, slices: prev[w.key]?.slices || [] };
+          return next;
+        });
+        await Promise.all(
+          pies.map(async (w: any) => {
+            try {
+              const block = normalizePieBlock({
+                title: String(w.title || 'Pie'),
+                format: (w?.presentation?.format === 'usd') ? 'usd' : 'number',
+                time: w?.time === 'all_time' ? 'all_time' : 'inherit',
+                query: { ...(w.query || {}) },
+                groupByKey: String(w?.presentation?.groupByKey || 'region'),
+                labelKey: String(w?.presentation?.labelKey || ''),
+                rawKey: String(w?.presentation?.rawKey || ''),
+                topN: Number(w?.presentation?.topN || 5),
+                otherLabel: String(w?.presentation?.otherLabel || 'Other'),
+              });
+              const out = await runPieBlock({ block, timeRange: effectiveTime(w) });
+              setPieSlices((p) => ({ ...p, [w.key]: { loading: false, slices: out.slices, otherLabel: out.otherLabel } }));
+            } catch {
+              setPieSlices((p) => ({ ...p, [w.key]: { loading: false, slices: [], otherLabel: String(w?.presentation?.otherLabel || 'Other') } }));
+            }
+          })
+        );
+      },
+
+      // API Pie (non-metrics grouped pies, e.g. CRM pipeline stage breakdown)
+      api_pie: async () => {
+        const apiPies = widgetsByKind.api_pie || [];
+        if (!apiPies.length) return;
+        setApiPieSlices((prev) => {
+          const next = { ...prev };
+          for (const w of apiPies) next[w.key] = { loading: true, slices: prev[w.key]?.slices || [] };
+          return next;
+        });
+        await Promise.all(
+          apiPies.map(async (w: any) => {
+            try {
+              const pres = w?.presentation || {};
+              const endpoint = String(pres.endpoint || '').trim();
+              if (!endpoint) throw new Error('Missing api_pie.presentation.endpoint');
+              const res = await fetchWithAuth(endpoint);
+              const json = await res.json().catch(() => ({}));
+              if (!res.ok) throw new Error(json?.error || `api_pie fetch ${res.status}`);
+
+              const itemsField = String(pres.itemsField || 'items');
+              const labelField = String(pres.labelField || 'label');
+              const valueField = String(pres.valueField || 'value');
+              const rawField = String(pres.rawField || labelField);
+              const hrefTemplate = typeof pres.hrefTemplate === 'string' ? pres.hrefTemplate : '';
+
+              const topN = Math.max(1, Math.min(25, Number(pres.topN || 8) || 8));
+              const otherLabel = String(pres.otherLabel || 'Other');
+
+              const items = getByPath(json, itemsField);
+              const arr = Array.isArray(items) ? items : [];
+              const normalized = arr
+                .map((it: any) => ({
+                  label: String(getByPath(it, labelField) ?? 'Unknown'),
+                  raw: getByPath(it, rawField),
+                  value: Number(getByPath(it, valueField) ?? 0),
+                  href: hrefTemplate ? applyTemplate(hrefTemplate, it) : '',
+                }))
+                .map((r: any) => ({ ...r, value: Number.isFinite(r.value) ? r.value : 0 }))
+                .sort((a: any, b: any) => b.value - a.value);
+
+              const top = normalized.slice(0, topN);
+              const otherSum = normalized.slice(topN).reduce((acc: number, r: any) => acc + (Number.isFinite(r.value) ? r.value : 0), 0);
+              const slices = [
+                ...top.map((r: any, idx: number) => ({ ...r, color: palette(idx) })),
+                ...(otherSum > 0 ? [{ label: otherLabel, raw: '__other__', value: otherSum, color: '#94a3b8', href: '' }] : []),
+              ];
+
+              setApiPieSlices((p) => ({ ...p, [w.key]: { loading: false, slices, otherLabel, error: undefined } }));
+            } catch (e: any) {
+              setApiPieSlices((p) => ({
+                ...p,
+                [w.key]: {
+                  loading: false,
+                  slices: [],
+                  otherLabel: String(w?.presentation?.otherLabel || 'Other'),
+                  error: String(e?.message || 'Failed to load'),
+                },
+              }));
+            }
+          })
+        );
+      },
+
+      // API Table (non-metrics tabular blocks, e.g. stalled opportunities)
+      api_table: async () => {
+        const apiTableWidgets = widgetsByKind.api_table || [];
+        if (!apiTableWidgets.length) return;
+        setApiTables((prev) => {
+          const next = { ...prev };
+          for (const w of apiTableWidgets) next[w.key] = { loading: true, rows: prev[w.key]?.rows || [], total: prev[w.key]?.total };
+          return next;
+        });
+        await Promise.all(
+          apiTableWidgets.map(async (w: any) => {
+            try {
+              const pres = w?.presentation || {};
+              const endpoint = String(pres.endpoint || '').trim();
+              if (!endpoint) throw new Error('Missing api_table.presentation.endpoint');
+              const res = await fetchWithAuth(endpoint);
+              const json = await res.json().catch(() => ({}));
+              if (!res.ok) throw new Error(json?.error || `api_table fetch ${res.status}`);
+
+              const itemsField = String(pres.itemsField || 'items');
+              const totalField = typeof pres.totalField === 'string' ? pres.totalField : '';
+              const rows = Array.isArray(getByPath(json, itemsField)) ? (getByPath(json, itemsField) as any[]) : [];
+              const total = totalField ? Number(getByPath(json, totalField) ?? 0) : undefined;
+              setApiTables((p) => ({ ...p, [w.key]: { loading: false, rows, total: (total != null && Number.isFinite(total)) ? total : undefined } }));
+            } catch {
+              setApiTables((p) => ({ ...p, [w.key]: { loading: false, rows: [], total: undefined } }));
+            }
+          })
+        );
+      },
+
+      // Metric Table (metrics drilldown rendered as a table; supports computed metrics too)
+      metric_table: async () => {
+        const metricTableWidgets = widgetsByKind.metric_table || [];
+        if (!metricTableWidgets.length) return;
+        setMetricTables((prev) => {
+          const next = { ...prev };
+          for (const w of metricTableWidgets) next[w.key] = { loading: true, rows: prev[w.key]?.rows || [], total: prev[w.key]?.total };
+          return next;
+        });
+        await Promise.all(
+          metricTableWidgets.map(async (w: any) => {
+            try {
+              const pres = w?.presentation || {};
+              const pageSize = Math.max(1, Math.min(100, Number(pres.pageSize || 10) || 10));
+              const t = effectiveTime(w);
+              const q = { ...(w.query || {}) };
+              // pointFilter: use query fields (metricKey + dims + params) and attach time range if present
+              const pointFilter: any = {
+                metricKey: String(q.metricKey || '').trim(),
+              };
+              if (!pointFilter.metricKey) throw new Error('Missing query.metricKey for metric_table');
+              if (q.entityKind) pointFilter.entityKind = q.entityKind;
+              if (q.entityId) pointFilter.entityId = q.entityId;
+              if (Array.isArray(q.entityIds)) pointFilter.entityIds = q.entityIds;
+              if (q.dataSourceId) pointFilter.dataSourceId = q.dataSourceId;
+              if (q.sourceGranularity) pointFilter.sourceGranularity = q.sourceGranularity;
+              if (q.params && typeof q.params === 'object') pointFilter.params = q.params;
+              if (q.dimensions && typeof q.dimensions === 'object') pointFilter.dimensions = q.dimensions;
+              if (t) {
+                pointFilter.start = t.start;
+                pointFilter.end = t.end;
+              }
+
+              const res = await fetchWithAuth('/api/metrics/drilldown', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ pointFilter, page: 1, pageSize, includeContributors: false }),
+              });
+              const json = await res.json().catch(() => ({}));
+              if (!res.ok) throw new Error(json?.error || `metrics/drilldown ${res.status}`);
+
+              const points = Array.isArray(json?.points) ? json.points : [];
+              const rows = points.map((p: any) => ({
+                id: String(p?.entityId || p?.id || ''),
+                date: p?.date,
+                value: p?.value,
+                entityKind: p?.entityKind,
+                entityId: p?.entityId,
+                dataSourceId: p?.dataSourceId,
+                ...(p?.dimensions && typeof p.dimensions === 'object' ? p.dimensions : {}),
+              }));
+              const total = Number(json?.pagination?.total ?? rows.length);
+              setMetricTables((p) => ({ ...p, [w.key]: { loading: false, rows, total: Number.isFinite(total) ? total : undefined } }));
+            } catch {
+              setMetricTables((p) => ({ ...p, [w.key]: { loading: false, rows: [], total: undefined } }));
+            }
+          })
+        );
+      },
+
+      // Line (multi series)
+      line: async () => {
+        const lines = widgetsByKind.line || [];
+        if (!lines.length) {
+          setTimelineEvents([]);
+          return;
+        }
+        setLineSeries((prev) => {
+          const next = { ...prev };
+          for (const w of lines) next[w.key] = { loading: true };
+          return next;
+        });
+
+        await Promise.all(
+          lines.map(async (w: any) => {
+            try {
+              const t = effectiveTime(w);
+              if (!t) throw new Error('Line widgets require time range');
+              const bucketOverride: Bucket | undefined = lineBucketByWidgetKey[w.key];
+
+              // Explicit series: [{ key, query }]
+              if (Array.isArray(w.series) && w.series.length > 0) {
+                const out: Array<{ id: string; label: string; color: string; points: Array<{ t: number; v: number; bucketIso?: string }>; drill?: { baseQuery: any; rowContextBase?: any; titlePrefix?: string } | null }> = [];
+                for (let i = 0; i < w.series.length; i++) {
+                  const s = w.series[i];
+                  const body = { ...(s.query || {}), start: t.start, end: t.end };
+                  const res = await fetchWithAuth('/api/metrics/query', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+                  const json = await res.json().catch(() => ({}));
+                  if (!res.ok) throw new Error(json?.error || `metrics/query ${res.status}`);
+                  const rows = Array.isArray(json.data) ? json.data : [];
+                  const pts = rows
+                    .map((r: any) => ({ t: r.bucket ? new Date(r.bucket).getTime() : NaN, v: Number(r.value ?? 0), bucketIso: typeof r.bucket === 'string' ? r.bucket : undefined }))
+                    .filter((p: any) => Number.isFinite(p.t))
+                    .sort((a: any, b: any) => a.t - b.t);
+                  out.push({
+                    id: `explicit_${w.key}_${i}`,
+                    label: String(s.key || `Series ${i + 1}`),
+                    color: palette(i),
+                    points: pts,
+                    drill: { baseQuery: body, rowContextBase: {}, titlePrefix: String(w.title || 'Line') },
+                  });
+                }
+                setLineSeries((p) => ({ ...p, [w.key]: { loading: false, series: out } }));
+                return;
+              }
+
+              // Computed top-N entities
+              if (w.seriesSpec?.mode === 'top_n_entities') {
+                const spec = w.seriesSpec;
+                const metricKey = String(spec.metricKey || '');
+                const entityKind = String(spec.entityKind || 'project');
+                const bucket = String(bucketOverride || spec.bucket || 'day');
+                const agg = String(spec.agg || 'sum');
+                const topN = Number(spec.topN || 5);
+                const includeOther = spec.includeOther !== false;
+                const otherLabel = String(spec.otherLabel || 'Other');
+                const cumulative = Boolean(spec.cumulative);
+
+                // totals for ranking
+                const totalsRes = await fetchWithAuth('/api/metrics/query', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ metricKey, bucket: 'none', agg, entityKind, groupByEntityId: true, start: t.start, end: t.end }),
+                });
+                const totalsJson = await totalsRes.json().catch(() => ({}));
+                const totalsRows = Array.isArray(totalsJson.data) ? totalsJson.data : [];
+                const ranked = totalsRows
+                  .map((r: any) => ({ entityId: String(r.entityId || ''), value: Number(r.value ?? 0) }))
+                  .filter((r: any) => r.entityId)
+                  .sort((a: any, b: any) => b.value - a.value);
+                const topIds = ranked.slice(0, topN).map((r: any) => r.entityId);
+
+                const fetchedNames = spec.labelSource?.source === 'projects' ? await fetchProjectNames(topIds) : {};
+
+                // series for top ids
+                const seriesRes = await fetchWithAuth('/api/metrics/query', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ metricKey, bucket, agg, entityKind, groupByEntityId: true, entityIds: topIds, start: t.start, end: t.end }),
+                });
+                const seriesJson = await seriesRes.json().catch(() => ({}));
+                const seriesRows = Array.isArray(seriesJson.data) ? seriesJson.data : [];
+
+                // total series (for other)
+                const totalRes = await fetchWithAuth('/api/metrics/query', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ metricKey, bucket, agg, entityKind, start: t.start, end: t.end }),
+                });
+                const totalJson = await totalRes.json().catch(() => ({}));
+                const totalRows = Array.isArray(totalJson.data) ? totalJson.data : [];
+                const buckets: number[] = totalRows
+                  .map((r: any) => (r.bucket ? new Date(r.bucket).getTime() : NaN))
+                  .filter((x: any) => Number.isFinite(x))
+                  .sort((a: any, b: any) => a - b);
+
+                const totalByT = new Map<number, number>();
+                const bucketIsoByT = new Map<number, string>();
+                for (const r of totalRows) {
                   const tt = r.bucket ? new Date(r.bucket).getTime() : NaN;
                   if (!Number.isFinite(tt)) continue;
-                  totalByBucket.set(tt, (totalByBucket.get(tt) || 0) + Number(r.value ?? 0));
-                  if (typeof r.bucket === 'string' && !bucketIsoByT.has(tt)) bucketIsoByT.set(tt, r.bucket);
+                  totalByT.set(tt, Number(r.value ?? 0));
+                  if (typeof r.bucket === 'string') bucketIsoByT.set(tt, r.bucket);
                 }
-              }
-              otherSeries = buckets.map((tt) => {
-                const total = Number(totalByBucket.get(tt) ?? 0);
-                const sumTop = topIds.reduce((acc, id) => acc + Number(byEntity.get(id)?.get(tt) ?? 0), 0);
-                return { t: tt, v: Math.max(0, total - sumTop) };
-              });
-            }
 
-            const otherIds = ranked.slice(topN).map((r) => r.entityId).filter(Boolean);
-            const otherIdsLimited = otherIds.slice(0, 1000);
+                const byEntity = new Map<string, Map<number, number>>();
+                for (const r of seriesRows) {
+                  const id = String(r.entityId || '');
+                  const tt = r.bucket ? new Date(r.bucket).getTime() : NaN;
+                  if (!id || !Number.isFinite(tt)) continue;
+                  if (!byEntity.has(id)) byEntity.set(id, new Map());
+                  byEntity.get(id)!.set(tt, Number(r.value ?? 0));
+                }
 
-            const out: Array<{
-              id: string;
-              label: string;
-              color: string;
-              points: Array<{ t: number; v: number; bucketIso?: string }>;
-              drillMenu?: { titlePrefix?: string; options: Array<{ label: string; baseQuery: any; rowContextBase?: any }> } | null;
-              drill?: { baseQuery: any; rowContextBase?: any; titlePrefix?: string } | null;
-            }> = [];
-            topIds.forEach((id: string, idx: number) => {
-              const m = byEntity.get(id) || new Map();
-              const label = spec.labelSource?.source === 'projects' ? (fetchedNames[id] || projectNames[id] || id) : id;
-              out.push({
-                id: `blend_${w.key}_${id}`,
-                label,
-                color: palette(idx),
-                points: buckets.map((tt) => ({ t: tt, v: Number(m.get(tt) ?? 0), bucketIso: bucketIsoByT.get(tt) })),
-                drillMenu: {
-                  titlePrefix: String(w.title || 'Line'),
-                  options: metricKeys.map((mk: string) => ({
-                    label: mk,
-                    baseQuery: { metricKey: mk, bucket, agg, entityKind, groupByEntityId: true, entityIds: topIds, start: t.start, end: t.end },
-                    rowContextBase: { entityId: id },
-                  })),
-                },
-              });
-            });
-            if (includeOther && otherSeries) {
-              out.push({
-                id: `blend_other_${w.key}`,
-                label: otherLabel,
-                color: '#94a3b8',
-                points: otherSeries.map((p) => ({ ...p, bucketIso: bucketIsoByT.get(p.t) })),
-                drillMenu: {
-                  titlePrefix: String(w.title || 'Line'),
-                  options: metricKeys.map((mk: string) => ({
-                    label: mk,
-                    baseQuery: otherIdsLimited.length
-                      ? { metricKey: mk, bucket, agg, entityKind, groupByEntityId: true, entityIds: otherIdsLimited, start: t.start, end: t.end }
-                      : { metricKey: mk, bucket, agg, entityKind, groupByEntityId: true, start: t.start, end: t.end },
-                    rowContextBase: {},
-                  })),
-                },
-              });
-            }
-
-            if (cumulative) {
-              for (const s of out) {
-                let acc = 0;
-                s.points = s.points.map((p) => {
-                  acc += p.v;
-                  return { ...p, v: acc };
+                const baseQuery = { metricKey, bucket, agg, entityKind, groupByEntityId: true, entityIds: topIds, start: t.start, end: t.end };
+                const out: Array<{ id: string; label: string; color: string; points: Array<{ t: number; v: number; bucketIso?: string }>; drill?: { baseQuery: any; rowContextBase?: any; titlePrefix?: string } | null }> = [];
+                topIds.forEach((id: string, idx: number) => {
+                  const m = byEntity.get(id) || new Map();
+                  const label = spec.labelSource?.source === 'projects' ? (fetchedNames[id] || projectNames[id] || id) : id;
+                  out.push({
+                    id: `ent_${w.key}_${id}`,
+                    label,
+                    color: palette(idx),
+                    points: buckets.map((tt: number) => ({ t: tt, v: Number(m.get(tt) ?? 0), bucketIso: bucketIsoByT.get(tt) })),
+                    drill: { baseQuery, rowContextBase: { entityId: id }, titlePrefix: String(w.title || 'Line') },
+                  });
                 });
+
+                if (includeOther) {
+                  // "Other" = all entities except topIds. We approximate by enumerating entityIds beyond topN when feasible.
+                  const otherIds = ranked.slice(topN).map((r: any) => r.entityId).filter(Boolean);
+                  const otherIdsLimited = otherIds.slice(0, 1000);
+                  const otherBaseQuery = otherIdsLimited.length
+                    ? { metricKey, bucket, agg, entityKind, groupByEntityId: true, entityIds: otherIdsLimited, start: t.start, end: t.end }
+                    : null;
+                  out.push({
+                    id: `other_${w.key}`,
+                    label: otherLabel,
+                    color: '#94a3b8',
+                    points: buckets.map((tt: number) => {
+                      const total = Number(totalByT.get(tt) ?? 0);
+                      const sumTop = topIds.reduce((acc: number, id: string) => acc + Number(byEntity.get(id)?.get(tt) ?? 0), 0);
+                      return { t: tt, v: Math.max(0, total - sumTop), bucketIso: bucketIsoByT.get(tt) };
+                    }),
+                    drill: otherBaseQuery ? { baseQuery: otherBaseQuery, rowContextBase: {}, titlePrefix: String(w.title || 'Line') } : null,
+                  });
+                }
+
+                if (cumulative) {
+                  for (const s of out) {
+                    let acc = 0;
+                    s.points = s.points.map((p) => {
+                      acc += p.v;
+                      return { ...p, v: acc };
+                    });
+                  }
+                }
+
+                setLineSeries((p) => ({ ...p, [w.key]: { loading: false, series: out } }));
+                return;
               }
+
+              // Computed top-N entities from blended metrics (e.g. followers = sum of last across platforms)
+              if (w.seriesSpec?.mode === 'top_n_entities_multi_metrics') {
+                const spec = w.seriesSpec;
+                const entityKind = String(spec.entityKind || 'project');
+                const metricKeys = Array.isArray(spec.metricKeys) ? spec.metricKeys.map((x: any) => String(x || '').trim()).filter(Boolean) : [];
+                const bucket = String(bucketOverride || spec.bucket || 'day');
+                const agg = String(spec.agg || 'last');
+                const topN = Number(spec.topN || 5);
+                const includeOther = spec.includeOther !== false;
+                const otherLabel = String(spec.otherLabel || 'Other');
+                const cumulative = Boolean(spec.cumulative);
+
+                // 1) totals by entityId across all metric keys for ranking
+                const totalsByEntity = new Map<string, number>();
+                for (const mk of metricKeys) {
+                  const totalsRes = await fetchWithAuth('/api/metrics/query', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ metricKey: mk, bucket: 'none', agg, entityKind, groupByEntityId: true, start: t.start, end: t.end }),
+                  });
+                  const totalsJson = await totalsRes.json().catch(() => ({}));
+                  const totalsRows = Array.isArray(totalsJson.data) ? totalsJson.data : [];
+                  for (const r of totalsRows) {
+                    const id = String(r.entityId || '');
+                    if (!id) continue;
+                    totalsByEntity.set(id, (totalsByEntity.get(id) || 0) + Number(r.value ?? 0));
+                  }
+                }
+
+                const ranked = Array.from(totalsByEntity.entries())
+                  .map(([entityId, value]) => ({ entityId, value }))
+                  .sort((a, b) => b.value - a.value);
+                const topIds = ranked.slice(0, topN).map((r) => r.entityId);
+
+                const fetchedNames = spec.labelSource?.source === 'projects' ? await fetchProjectNames(topIds) : {};
+
+                // 2) per-bucket series for top IDs: sum across metric keys
+                const byEntity = new Map<string, Map<number, number>>();
+                const bucketsSet = new Set<number>();
+                const bucketIsoByT = new Map<number, string>();
+
+                for (const mk of metricKeys) {
+                  const seriesRes = await fetchWithAuth('/api/metrics/query', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ metricKey: mk, bucket, agg, entityKind, groupByEntityId: true, entityIds: topIds, start: t.start, end: t.end }),
+                  });
+                  const seriesJson = await seriesRes.json().catch(() => ({}));
+                  const seriesRows = Array.isArray(seriesJson.data) ? seriesJson.data : [];
+                  for (const r of seriesRows) {
+                    const id = String(r.entityId || '');
+                    const tt = r.bucket ? new Date(r.bucket).getTime() : NaN;
+                    if (!id || !Number.isFinite(tt)) continue;
+                    bucketsSet.add(tt);
+                    if (typeof r.bucket === 'string' && !bucketIsoByT.has(tt)) bucketIsoByT.set(tt, r.bucket);
+                    if (!byEntity.has(id)) byEntity.set(id, new Map());
+                    byEntity.get(id)!.set(tt, (byEntity.get(id)!.get(tt) || 0) + Number(r.value ?? 0));
+                  }
+                }
+
+                const buckets = Array.from(bucketsSet.values()).sort((a, b) => a - b);
+
+                // 3) optional "Other" = all entities minus top, computed via groupByEntityId across all entities
+                let otherSeries: Array<{ t: number; v: number }> | null = null;
+                if (includeOther) {
+                  // compute blended total per bucket across all entities
+                  const totalByBucket = new Map<number, number>();
+                  for (const mk of metricKeys) {
+                    const res = await fetchWithAuth('/api/metrics/query', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ metricKey: mk, bucket, agg, entityKind, groupByEntityId: true, start: t.start, end: t.end }),
+                    });
+                    const json = await res.json().catch(() => ({}));
+                    const rows = Array.isArray(json.data) ? json.data : [];
+                    for (const r of rows) {
+                      const tt = r.bucket ? new Date(r.bucket).getTime() : NaN;
+                      if (!Number.isFinite(tt)) continue;
+                      totalByBucket.set(tt, (totalByBucket.get(tt) || 0) + Number(r.value ?? 0));
+                      if (typeof r.bucket === 'string' && !bucketIsoByT.has(tt)) bucketIsoByT.set(tt, r.bucket);
+                    }
+                  }
+                  otherSeries = buckets.map((tt) => {
+                    const total = Number(totalByBucket.get(tt) ?? 0);
+                    const sumTop = topIds.reduce((acc, id) => acc + Number(byEntity.get(id)?.get(tt) ?? 0), 0);
+                    return { t: tt, v: Math.max(0, total - sumTop) };
+                  });
+                }
+
+                const otherIds = ranked.slice(topN).map((r) => r.entityId).filter(Boolean);
+                const otherIdsLimited = otherIds.slice(0, 1000);
+
+                const out: Array<{
+                  id: string;
+                  label: string;
+                  color: string;
+                  points: Array<{ t: number; v: number; bucketIso?: string }>;
+                  drillMenu?: { titlePrefix?: string; options: Array<{ label: string; baseQuery: any; rowContextBase?: any }> } | null;
+                  drill?: { baseQuery: any; rowContextBase?: any; titlePrefix?: string } | null;
+                }> = [];
+                topIds.forEach((id: string, idx: number) => {
+                  const m = byEntity.get(id) || new Map();
+                  const label = spec.labelSource?.source === 'projects' ? (fetchedNames[id] || projectNames[id] || id) : id;
+                  out.push({
+                    id: `blend_${w.key}_${id}`,
+                    label,
+                    color: palette(idx),
+                    points: buckets.map((tt) => ({ t: tt, v: Number(m.get(tt) ?? 0), bucketIso: bucketIsoByT.get(tt) })),
+                    drillMenu: {
+                      titlePrefix: String(w.title || 'Line'),
+                      options: metricKeys.map((mk: string) => ({
+                        label: mk,
+                        baseQuery: { metricKey: mk, bucket, agg, entityKind, groupByEntityId: true, entityIds: topIds, start: t.start, end: t.end },
+                        rowContextBase: { entityId: id },
+                      })),
+                    },
+                  });
+                });
+                if (includeOther && otherSeries) {
+                  out.push({
+                    id: `blend_other_${w.key}`,
+                    label: otherLabel,
+                    color: '#94a3b8',
+                    points: otherSeries.map((p) => ({ ...p, bucketIso: bucketIsoByT.get(p.t) })),
+                    drillMenu: {
+                      titlePrefix: String(w.title || 'Line'),
+                      options: metricKeys.map((mk: string) => ({
+                        label: mk,
+                        baseQuery: otherIdsLimited.length
+                          ? { metricKey: mk, bucket, agg, entityKind, groupByEntityId: true, entityIds: otherIdsLimited, start: t.start, end: t.end }
+                          : { metricKey: mk, bucket, agg, entityKind, groupByEntityId: true, start: t.start, end: t.end },
+                        rowContextBase: {},
+                      })),
+                    },
+                  });
+                }
+
+                if (cumulative) {
+                  for (const s of out) {
+                    let acc = 0;
+                    s.points = s.points.map((p) => {
+                      acc += p.v;
+                      return { ...p, v: acc };
+                    });
+                  }
+                }
+
+                setLineSeries((p) => ({ ...p, [w.key]: { loading: false, series: out } }));
+                return;
+              }
+
+              throw new Error('Unsupported line widget config');
+            } catch {
+              setLineSeries((p) => ({ ...p, [w.key]: { loading: false, series: [] } }));
             }
+          })
+        );
 
-            setLineSeries((p) => ({ ...p, [w.key]: { loading: false, series: out } }));
-            return;
+        // Timeline overlays (best-effort)
+        const needsTimeline = lines.some((w: any) => Boolean(w?.presentation?.timelineOverlay));
+        if (needsTimeline) {
+          try {
+            setTimelineLoading(true);
+            const u = `/api/projects/activity/all?from=${encodeURIComponent(range.start)}&to=${encodeURIComponent(range.end)}`;
+            const res = await fetch(u);
+            const json = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(json?.error || `Failed (${res.status})`);
+            const items = Array.isArray(json?.data) ? json.data : [];
+            setTimelineEvents(items as any);
+          } catch {
+            setTimelineEvents([]);
+          } finally {
+            setTimelineLoading(false);
           }
-
-          throw new Error('Unsupported line widget config');
-        } catch {
-          setLineSeries((p) => ({ ...p, [w.key]: { loading: false, series: [] } }));
+        } else {
+          setTimelineEvents([]);
         }
-      })
-    );
+      },
+    };
 
-    // Timeline overlays (best-effort)
-    const needsTimeline = lines.some((w: any) => Boolean(w?.presentation?.timelineOverlay));
-    if (needsTimeline) {
-      try {
-        setTimelineLoading(true);
-        const u = `/api/projects/activity/all?from=${encodeURIComponent(range.start)}&to=${encodeURIComponent(range.end)}`;
-        const res = await fetch(u);
-        const json = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(json?.error || `Failed (${res.status})`);
-        const items = Array.isArray(json?.data) ? json.data : [];
-        setTimelineEvents(items as any);
-      } catch {
-        setTimelineEvents([]);
-      } finally {
-        setTimelineLoading(false);
-      }
-    } else {
-      setTimelineEvents([]);
+    const loaderOrder = ['kpi_catalog', 'kpi', 'gauge', 'tabs', 'pie', 'api_pie', 'api_table', 'metric_table', 'line'];
+    for (const kind of loaderOrder) {
+      const loader = widgetLoaders[kind];
+      if (loader) await loader();
     }
   }, [definition?.key, effectiveTime, range.start, range.end, resolveProjectNames, projectNames, lineBucketByWidgetKey]);
 
@@ -2539,6 +2751,849 @@ export function Dashboards(props: DashboardsProps = {}) {
   };
 
   const widgetList = Array.isArray(definition?.definition?.widgets) ? definition!.definition.widgets : [];
+
+  const renderKpiCatalogWidget = (w: any) => {
+    const st = kpiCatalogTotals[w.key];
+    const pres = w?.presentation || {};
+    const rawEntityKind = typeof pres?.entityKind === 'string' ? pres.entityKind.trim() : '';
+    const isAutoEntityKind = rawEntityKind === '' || rawEntityKind.toLowerCase() === 'auto';
+    const entityKind = !isAutoEntityKind ? rawEntityKind : '';
+    const onlyWithPoints = pres?.onlyWithPoints === true;
+    const ownerKind = typeof pres?.owner?.kind === 'string' ? pres.owner.kind.trim().toLowerCase() : '';
+    const ownerId = typeof pres?.owner?.id === 'string' ? pres.owner.id.trim() : '';
+    const hasOwnerFilter = Boolean(ownerKind && ownerId);
+    // Support filtering by entity kinds (metrics that support these entity kinds)
+    const filterEntityKinds: string[] = Array.isArray(pres?.filterEntityKinds)
+      ? (pres.filterEntityKinds as any[]).map((x) => String(x || '').trim().toLowerCase()).filter(Boolean)
+      : [];
+    const hasEntityKindsFilter = filterEntityKinds.length > 0;
+    // Support filtering by category
+    const filterCategories: string[] = Array.isArray(pres?.filterCategories)
+      ? (pres.filterCategories as any[]).map((x) => String(x || '').trim().toLowerCase()).filter(Boolean)
+      : [];
+    const hasCategories = filterCategories.length > 0;
+
+    const items = Object.values(catalogByKey || {});
+    const filtered = items
+      .filter((it) => {
+        // Filter by owner (e.g., only feature pack metrics)
+        if (hasOwnerFilter) {
+          const ik = typeof (it as any)?.owner?.kind === 'string' ? String((it as any).owner.kind).trim().toLowerCase() : '';
+          const iid = typeof (it as any)?.owner?.id === 'string' ? String((it as any).owner.id).trim() : '';
+          if (ik !== ownerKind || iid !== ownerId) return false;
+        }
+        // Filter by entity kinds (metrics that support any of these entity kinds)
+        if (hasEntityKindsFilter) {
+          const metricEntityKinds = Array.isArray(it.entity_kinds)
+            ? (it.entity_kinds as any[]).map((x) => String(x || '').trim().toLowerCase())
+            : [];
+          const hasMatch = filterEntityKinds.some((ek) => metricEntityKinds.includes(ek));
+          if (!hasMatch) return false;
+        }
+        // Filter by category
+        if (hasCategories) {
+          const cat = typeof it.category === 'string' ? it.category.trim().toLowerCase() : '';
+          if (!filterCategories.includes(cat)) return false;
+        }
+        // If entityKind is explicitly set (not auto), filter metrics that support it
+        if (!isAutoEntityKind) {
+          const kinds = Array.isArray(it.entity_kinds) ? it.entity_kinds : [];
+          // If the metric declares supported entity kinds, respect it.
+          // If it doesn't, we cannot safely assume it works for the chosen entityKind.
+          if (kinds.length === 0) return false;
+          if (!kinds.includes(entityKind)) return false;
+        }
+        if (onlyWithPoints && Number(it.pointsCount || 0) <= 0) return false;
+        return true;
+      })
+      .sort((a, b) => String(a.label || a.key).localeCompare(String(b.label || b.key)));
+
+    return (
+      <div key={w.key} className="span-12">
+        <Card title={w.title || 'KPIs'}>
+          <div style={{ padding: 14 }}>
+            {st?.loading ? (
+              <Spinner />
+            ) : (
+              <div className="kpi-catalog-grid">
+                {filtered.map((it) => {
+                  const mk = it.key;
+                  const val = Number(st?.totalsByMetricKey?.[mk] ?? 0);
+                  const format = (it.unit === 'usd') ? 'usd' : 'number';
+                  const iconName = String(it.icon || fallbackIconForMetric(it.category) || '');
+                  const Icon = resolvePlatformIcon(iconName);
+                  const iconColor = String(it.icon_color || colors.accent.default);
+                  const t = effectiveTime(w);
+                  const ek = isAutoEntityKind ? pickEntityKindForMetric(it) : entityKind;
+                  const pf: any = { metricKey: mk };
+                  if (ek) pf.entityKind = ek;
+                  if (t) { pf.start = t.start; pf.end = t.end; }
+                  return (
+                    <div
+                      key={mk}
+                      className="kpi-mini"
+                      style={{
+                        border: `1px solid ${colors.border.subtle}`,
+                        background: colors.bg.surface,
+                        cursor: 'pointer',
+                      }}
+                      title="Click to drill down"
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => {
+                        runDrillDescriptor({
+                          kind: 'pointFilter',
+                          pointFilter: pf,
+                          title: `${String(w.title || 'KPIs')} • ${String(it.label || mk)}`,
+                          format: format as any,
+                        });
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key !== 'Enter' && e.key !== ' ') return;
+                        e.preventDefault();
+                        runDrillDescriptor({
+                          kind: 'pointFilter',
+                          pointFilter: pf,
+                          title: `${String(w.title || 'KPIs')} • ${String(it.label || mk)}`,
+                          format: format as any,
+                        });
+                      }}
+                    >
+                      <div className="kpi-mini-top">
+                        <div style={{ minWidth: 0 }}>
+                          <div className="kpi-mini-title" title={mk}>{it.label || mk}</div>
+                          <div className="kpi-mini-val">{formatNumber(val, format as any)}</div>
+                        </div>
+                        {Icon ? (
+                          <div
+                            className="kpi-icon"
+                            style={{
+                              width: 34,
+                              height: 34,
+                              borderRadius: radius.lg,
+                              border: `1px solid ${colors.border.subtle}`,
+                              background: colors.bg.muted,
+                              color: iconColor,
+                            }}
+                          >
+                            <Icon size={18} style={{ color: iconColor }} />
+                          </div>
+                        ) : null}
+                      </div>
+                      <div className="kpi-mini-badges">
+                        {it.category ? <Badge>{it.category}</Badge> : null}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </Card>
+      </div>
+    );
+  };
+
+  const renderKpiWidget = (w: any, ctx: WidgetRenderContext) => {
+    const { spanClass, metricKey, fmt, cat } = ctx;
+    const st = kpiValues[w.key];
+    const val = Number(st?.value ?? 0);
+    const prev = typeof st?.prev === 'number' ? st.prev : null;
+    let pct = 0;
+    if (prev !== null && prev > 0) pct = ((val - prev) / prev) * 100;
+
+    const iconName = String(w?.presentation?.icon || cat?.icon || '');
+    const Icon = resolvePlatformIcon(iconName);
+    const iconColor = String(w?.presentation?.iconColor || cat?.icon_color || colors.accent.default);
+    const action = w?.presentation?.action;
+    const t = effectiveTime(w);
+    const valueSource = w?.presentation?.valueSource;
+
+    const buildPointFilter = (): PointFilter | null => {
+      // 1) valueSource-driven metric KPIs
+      if (valueSource?.kind === 'metrics_sum_last_per_entity' && typeof valueSource.metricKey === 'string') {
+        const pf: PointFilter = { metricKey: String(valueSource.metricKey).trim() };
+        const ek = typeof valueSource.entityKind === 'string' ? valueSource.entityKind.trim() : (typeof w?.query?.entityKind === 'string' ? w.query.entityKind.trim() : '');
+        if (ek) pf.entityKind = ek;
+        if (t) { pf.start = t.start; pf.end = t.end; }
+        return pf;
+      }
+      if (valueSource?.kind === 'metrics_sum_agg_per_entity' && typeof valueSource.metricKey === 'string') {
+        const pf: PointFilter = { metricKey: String(valueSource.metricKey).trim() };
+        const ek = typeof valueSource.entityKind === 'string' ? valueSource.entityKind.trim() : (typeof w?.query?.entityKind === 'string' ? w.query.entityKind.trim() : '');
+        if (ek) pf.entityKind = ek;
+        if (t) { pf.start = t.start; pf.end = t.end; }
+        return pf;
+      }
+      // 2) direct metric query KPIs
+      const q = w?.query;
+      const mk = typeof q?.metricKey === 'string' ? q.metricKey.trim() : '';
+      if (!mk) return null;
+      const pf: PointFilter = { metricKey: mk };
+      if (typeof q.entityKind === 'string' && q.entityKind.trim()) pf.entityKind = q.entityKind.trim();
+      if (typeof q.entityId === 'string' && q.entityId.trim()) pf.entityId = q.entityId.trim();
+      if (Array.isArray(q.entityIds)) {
+        const ids = (q.entityIds as any[]).map((x) => String(x || '').trim()).filter(Boolean);
+        if (ids.length) pf.entityIds = ids;
+      }
+      if (typeof q.dataSourceId === 'string' && q.dataSourceId.trim()) pf.dataSourceId = q.dataSourceId.trim();
+      if (typeof q.sourceGranularity === 'string' && q.sourceGranularity.trim()) pf.sourceGranularity = q.sourceGranularity.trim();
+      if (q.params && typeof q.params === 'object') pf.params = q.params as any;
+      if (q.dimensions && typeof q.dimensions === 'object') pf.dimensions = q.dimensions as any;
+      if (t) { pf.start = t.start; pf.end = t.end; }
+      return pf;
+    };
+
+    const drillPointFilter = buildPointFilter();
+    const drillMenu =
+      valueSource?.kind === 'metrics_sum_last_per_entity_multi' && Array.isArray(valueSource.metricKeys)
+        ? (valueSource.metricKeys as any[]).map((x) => String(x || '').trim()).filter(Boolean)
+        : [];
+    const canDrill = Boolean(drillPointFilter) || drillMenu.length > 0;
+
+    return (
+      <div key={w.key} className={spanClass}>
+        <Card>
+          <div
+            className="kpi"
+            style={{ cursor: canDrill ? 'pointer' : undefined }}
+            title={canDrill ? 'Click to drill down' : undefined}
+            role={canDrill ? 'button' : undefined}
+            tabIndex={canDrill ? 0 : undefined}
+            onClick={() => {
+              if (drillMenu.length > 0) {
+                openDrillMenu({
+                  title: `${String(w.title || cat?.label || metricKey || 'KPI')}`,
+                  format: fmt as any,
+                  options: drillMenu.map((mk) => {
+                    const pf: PointFilter = { metricKey: mk };
+                    const ek = typeof valueSource.entityKind === 'string' ? valueSource.entityKind.trim() : (typeof w?.query?.entityKind === 'string' ? w.query.entityKind.trim() : '');
+                    if (ek) pf.entityKind = ek;
+                    if (t) { pf.start = t.start; pf.end = t.end; }
+                    return {
+                      label: mk,
+                      d: { kind: 'pointFilter', pointFilter: pf, title: `${String(w.title || 'KPI')} • ${mk}`, format: fmt as any },
+                    };
+                  }),
+                });
+                return;
+              }
+              if (drillPointFilter) {
+                runDrillDescriptor({
+                  kind: 'pointFilter',
+                  pointFilter: drillPointFilter,
+                  title: `${String(w.title || cat?.label || metricKey || 'KPI')}`,
+                  format: fmt as any,
+                });
+                return;
+              }
+              if (action?.href) {
+                const href = String(action.href);
+                openRouteDrill({ href, title: String(action?.label || w.title || cat?.label || metricKey || 'Details') });
+              }
+            }}
+            onKeyDown={(e) => {
+              if (!canDrill) return;
+              if (e.key !== 'Enter' && e.key !== ' ') return;
+              e.preventDefault();
+              // Mirror click behavior
+              if (drillMenu.length > 0) {
+                openDrillMenu({
+                  title: `${String(w.title || cat?.label || metricKey || 'KPI')}`,
+                  format: fmt as any,
+                  options: drillMenu.map((mk) => {
+                    const pf: PointFilter = { metricKey: mk };
+                    const ek = typeof valueSource.entityKind === 'string' ? valueSource.entityKind.trim() : (typeof w?.query?.entityKind === 'string' ? w.query.entityKind.trim() : '');
+                    if (ek) pf.entityKind = ek;
+                    if (t) { pf.start = t.start; pf.end = t.end; }
+                    return {
+                      label: mk,
+                      d: { kind: 'pointFilter', pointFilter: pf, title: `${String(w.title || 'KPI')} • ${mk}`, format: fmt as any },
+                    };
+                  }),
+                });
+                return;
+              }
+              if (drillPointFilter) {
+                runDrillDescriptor({
+                  kind: 'pointFilter',
+                  pointFilter: drillPointFilter,
+                  title: `${String(w.title || cat?.label || metricKey || 'KPI')}`,
+                  format: fmt as any,
+                });
+              }
+            }}
+          >
+            <div className="kpi-head">
+              <div>
+                <div className="kpi-title">{w.title || cat?.label || metricKey}</div>
+                <div className="kpi-val">{st?.loading ? '—' : formatNumber(val, fmt as any)}</div>
+              </div>
+              {Icon ? (
+                <div
+                  className="kpi-icon"
+                  style={{
+                    borderRadius: radius.lg,
+                    border: `1px solid ${colors.border.subtle}`,
+                    background: colors.bg.muted,
+                    color: iconColor,
+                  }}
+                >
+                  <Icon size={22} style={{ color: iconColor }} />
+                </div>
+              ) : null}
+            </div>
+            {prev !== null ? (
+              <div className="kpi-delta">
+                <span style={{ color: pct >= 0 ? '#22c55e' : '#ef4444' }}>{formatNumber(pct, 'percent')}</span>
+                <span style={{ opacity: 0.7 }}>vs previous period</span>
+              </div>
+            ) : null}
+            {action?.href && action?.label ? (
+              <a
+                className="kpi-action"
+                href={String(action.href)}
+                onClick={(e: any) => {
+                  // Keep UX in-dashboard: open in the drill panel, not a full navigation.
+                  e.preventDefault();
+                  e.stopPropagation?.();
+                  openRouteDrill({ href: String(action.href), title: String(action.label) });
+                }}
+              >
+                {String(action.label)}
+              </a>
+            ) : (
+              <span className="kpi-action kpi-action--placeholder" aria-hidden="true">
+                &nbsp;
+              </span>
+            )}
+          </div>
+        </Card>
+      </div>
+    );
+  };
+
+  const renderGaugeWidget = (w: any, ctx: WidgetRenderContext) => {
+    const { spanClass, fmt } = ctx;
+    const st = gaugeValues[w.key];
+    const pres = w?.presentation || {};
+    const loading = !st || st?.loading;
+    const value = Number(st?.value ?? 0);
+    const max = Number(st?.max ?? 0);
+    const min = Number(st?.min ?? 0);
+    const range = Math.max(0, max - min);
+    const rawPct = range > 0 ? (value - min) / range : 0;
+    const pct = Math.max(0, Math.min(1, rawPct));
+    const fillPct = loading ? 0 : pct;
+    const pctLabel = `${Math.round(pct * 100)}%`;
+    const valueFormat = (pres?.valueFormat || pres?.format || fmt) as 'number' | 'usd';
+    const maxFormat = (pres?.maxFormat || pres?.format || fmt) as 'number' | 'usd';
+    const gaugeColor = String(pres?.color || colors.accent.default);
+    const valueLabel = String(pres?.valueLabel || 'Value');
+    const maxLabel = String(pres?.maxLabel || 'Max');
+    const showValues = pres?.showValues !== false;
+
+    return (
+      <div key={w.key} className={spanClass}>
+        <Card>
+          <div className="gauge">
+            <div
+              className="gauge-track"
+              style={{
+                border: `1px solid ${colors.border.subtle}`,
+                background: colors.bg.muted,
+              }}
+            >
+              <div
+                className="gauge-fill"
+                style={{
+                  height: `${fillPct * 100}%`,
+                  background: gaugeColor,
+                }}
+              />
+            </div>
+            <div className="gauge-content">
+              <div className="gauge-title">{w.title || 'Gauge'}</div>
+              <div className="gauge-value">{loading ? '—' : pctLabel}</div>
+              {showValues ? (
+                <div className="gauge-sub">
+                  {loading
+                    ? 'Loading...'
+                    : `${valueLabel}: ${formatNumber(value, valueFormat)} · ${maxLabel}: ${formatNumber(max, maxFormat)}`}
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </Card>
+      </div>
+    );
+  };
+
+  const renderSemiGaugeWidget = (w: any, ctx: WidgetRenderContext) => {
+    const { spanClass, fmt } = ctx;
+    const st = gaugeValues[w.key];
+    const pres = w?.presentation || {};
+    const loading = !st || st?.loading;
+    const value = Number(st?.value ?? 0);
+    const max = Number(st?.max ?? 0);
+    const min = Number(st?.min ?? 0);
+    const range = Math.max(0, max - min);
+    const rawPct = range > 0 ? (value - min) / range : 0;
+    const pct = Math.max(0, Math.min(1, rawPct));
+    const fillPct = loading ? 0 : pct;
+    const pctLabel = `${Math.round(pct * 100)}%`;
+    const valueFormat = (pres?.valueFormat || pres?.format || fmt) as 'number' | 'usd';
+    const maxFormat = (pres?.maxFormat || pres?.format || fmt) as 'number' | 'usd';
+    const gaugeColor = String(pres?.color || colors.accent.default);
+    const valueLabel = String(pres?.valueLabel || 'Value');
+    const maxLabel = String(pres?.maxLabel || 'Max');
+    const showValues = pres?.showValues !== false;
+
+    const r = 70;
+    const cx = 100;
+    const cy = 90;
+    // Arc opens upward: from left (cx-r, cy) to right (cx+r, cy) going through top (cx, cy-r)
+    // sweep-flag=0 (counterclockwise in SVG) draws the upper arc that curves upward
+    const arcPath = `M ${cx - r} ${cy} A ${r} ${r} 0 0 0 ${cx + r} ${cy}`;
+    const arcLength = Math.PI * r;
+    const dash = `${fillPct * arcLength} ${arcLength}`;
+
+    return (
+      <div key={w.key} className={spanClass}>
+        <Card>
+          <div className="semi-gauge">
+            <svg viewBox="0 0 200 100" className="semi-gauge-svg" aria-hidden="true">
+              <path
+                d={arcPath}
+                fill="none"
+                stroke={colors.border.subtle}
+                strokeWidth={14}
+                strokeLinecap="round"
+              />
+              <path
+                d={arcPath}
+                fill="none"
+                stroke={gaugeColor}
+                strokeWidth={14}
+                strokeLinecap="round"
+                strokeDasharray={dash}
+              />
+            </svg>
+            <div className="semi-gauge-content">
+              <div className="semi-gauge-title">{w.title || 'Gauge'}</div>
+              <div className="semi-gauge-value">{loading ? '—' : pctLabel}</div>
+              {showValues ? (
+                <div className="semi-gauge-sub">
+                  {loading
+                    ? 'Loading...'
+                    : `${valueLabel}: ${formatNumber(value, valueFormat)} · ${maxLabel}: ${formatNumber(max, maxFormat)}`}
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </Card>
+      </div>
+    );
+  };
+
+  const renderTabsWidget = (w: any, ctx: WidgetRenderContext) => {
+    const { spanClass } = ctx;
+    const st = tabsData[w.key];
+    const tabs = Array.isArray(st?.tabs) ? st!.tabs! : [];
+    const defaultKey = tabs[0]?.key || '';
+    const activeKey = tabsActiveByWidget[w.key] || defaultKey;
+    const active = tabs.find((t) => t.key === activeKey) || tabs[0];
+    const points = active?.points || [];
+    const maxPoints = Math.max(3, Math.min(12, Number(active?.maxPoints || 8)));
+    const trimmed = points.slice(-maxPoints);
+    const maxVal = trimmed.reduce((acc, p) => Math.max(acc, Number(p.v ?? 0)), 0);
+
+    return (
+      <div key={w.key} className={spanClass}>
+        <Card title={w.title || 'Details'}>
+          <div className="tabs-widget">
+            <div className="tabs-row">
+              {tabs.map((t) => {
+                const isActive = t.key === activeKey;
+                const TabIcon = resolvePlatformIcon(t.icon || '');
+                return (
+                  <button
+                    key={t.key}
+                    type="button"
+                    className={`tabs-tab${isActive ? ' tabs-tab--active' : ''}`}
+                    onClick={() => setTabsActiveByWidget((p) => ({ ...p, [w.key]: t.key }))}
+                  >
+                    {TabIcon ? <TabIcon size={16} /> : null}
+                    <span>{t.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="tabs-summary">
+              <div className="tabs-summary-label">{active?.summaryLabel || 'Total'}</div>
+              <div className="tabs-summary-value">
+                {st?.loading ? '—' : formatNumber(Number(active?.total ?? 0), active?.format || 'number')}
+              </div>
+            </div>
+
+            <div className="tabs-chart">
+              {trimmed.map((p, idx) => {
+                const v = Number(p.v ?? 0);
+                // Calculate height as percentage of 80px container (min 6px for visibility)
+                const hPx = maxVal > 0 ? Math.max(6, Math.round((v / maxVal) * 80)) : 6;
+                const label = formatBucketLabel(active?.bucket || 'day', p.bucketIso);
+                return (
+                  <div key={`${active?.key || 'tab'}_${idx}`} className="tabs-bar-wrap">
+                    <div className="tabs-bar-container">
+                      <div className="tabs-bar" style={{ height: `${hPx}px` }} />
+                    </div>
+                    <div className="tabs-bar-value">{v > 0 ? formatNumber(v, active?.format || 'number') : ''}</div>
+                    <div className="tabs-bar-label">{label}</div>
+                  </div>
+                );
+              })}
+              {trimmed.length === 0 ? (
+                <div className="tabs-empty">No data</div>
+              ) : null}
+            </div>
+          </div>
+        </Card>
+      </div>
+    );
+  };
+
+  const renderPieWidget = (w: any, ctx: WidgetRenderContext) => {
+    const { spanClass, fmt } = ctx;
+    const st = pieSlices[w.key];
+    const slices = Array.isArray(st?.slices) ? st?.slices : [];
+    const otherLabel = String(st?.otherLabel || w?.presentation?.otherLabel || 'Other');
+
+    const onSliceClick = async (slice: any) => {
+      const drill = slice?.drill;
+      if (!drill || !drill.pointFilter) return;
+      await runDrilldown({ pointFilter: drill.pointFilter, title: drill.title, format: drill.format, page: 1 });
+    };
+
+    return (
+      <div key={w.key} className={spanClass}>
+        <Card title={w.title || 'Pie'}>
+          <div style={{ padding: 14 }}>
+            {!st || st?.loading ? <Spinner /> : <Donut slices={slices as any} format={fmt as any} onSliceClick={onSliceClick} />}
+            {st && !st?.loading && slices.some((s: any) => s?.raw === '__other__') ? (
+              <div style={{ marginTop: 10, fontSize: 12, color: colors.text.muted }}>
+                Tip: "{otherLabel}" is an aggregate bucket; drilldown is available on named slices only (for now).
+              </div>
+            ) : null}
+          </div>
+        </Card>
+      </div>
+    );
+  };
+
+  const renderApiPieWidget = (w: any, ctx: WidgetRenderContext) => {
+    const { spanClass } = ctx;
+    const st = apiPieSlices[w.key];
+    const slices = Array.isArray(st?.slices) ? st?.slices : [];
+    const otherLabel = String(st?.otherLabel || w?.presentation?.otherLabel || 'Other');
+    const format = (w?.presentation?.format === 'usd') ? 'usd' : 'number';
+    const error = typeof st?.error === 'string' ? st.error : '';
+
+    const onSliceClick = async (slice: any) => {
+      const href = typeof slice?.href === 'string' ? slice.href : '';
+      if (!href) return;
+      openRouteDrill({ href, title: `${String(w.title || 'Chart')} • ${String(slice?.label || '')}`.trim() });
+    };
+
+    return (
+      <div key={w.key} className={spanClass}>
+        <Card title={w.title || 'Pie'}>
+          <div style={{ padding: 14 }}>
+            {!st || st?.loading ? <Spinner /> : (
+              error ? (
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: 240 }}>
+                  <div style={{ fontSize: 13, color: colors.text.muted, textAlign: 'center', maxWidth: 520 }}>
+                    <div style={{ fontWeight: 600, color: colors.text.primary, marginBottom: 6 }}>Could not load chart</div>
+                    <div>{error}</div>
+                    <div style={{ marginTop: 8, fontSize: 12 }}>
+                      Tip: open <code>/api/crm/reports/pipeline-health</code> in a new tab to see the raw response.
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <Donut slices={slices as any} format={format as any} onSliceClick={onSliceClick} />
+              )
+            )}
+            {st && !st?.loading && slices.some((s: any) => s?.raw === '__other__') ? (
+              <div style={{ marginTop: 10, fontSize: 12, color: colors.text.muted }}>
+                Tip: "{otherLabel}" is an aggregate bucket; click named slices to open filtered lists.
+              </div>
+            ) : null}
+          </div>
+        </Card>
+      </div>
+    );
+  };
+
+  const renderApiTableWidget = (w: any, ctx: WidgetRenderContext) => {
+    const { spanClass } = ctx;
+    const st = apiTables[w.key];
+    const rows = Array.isArray(st?.rows) ? st?.rows : [];
+    const pres = w?.presentation || {};
+    const cols = Array.isArray(pres.columns) ? pres.columns : [];
+    const rowHrefTemplate = typeof pres.rowHrefTemplate === 'string' ? pres.rowHrefTemplate : '';
+
+    const renderCell = (row: any, col: any) => {
+      const field = String(col?.field || '').trim();
+      const label = String(col?.label || field || '');
+      const fmt = String(col?.format || '').toLowerCase();
+      const raw = field ? getByPath(row, field) : undefined;
+      if (fmt === 'usd') return formatNumber(Number(raw ?? 0), 'usd');
+      if (fmt === 'number') return formatNumber(Number(raw ?? 0), 'number');
+      if (fmt === 'datetime' || fmt === 'date') {
+        if (!raw) return '—';
+        const d = new Date(String(raw));
+        if (!Number.isFinite(d.getTime())) return String(raw);
+        return fmt === 'date' ? d.toLocaleDateString() : d.toLocaleString();
+      }
+      return raw == null ? '—' : String(raw);
+    };
+
+    return (
+      <div key={w.key} className={spanClass}>
+        <Card title={w.title || 'Table'}>
+          <div style={{ padding: 14 }}>
+            {st?.loading ? <Spinner /> : (
+              <>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                  <div style={{ fontSize: 12, color: colors.text.muted }}>
+                    {typeof st?.total === 'number' ? `${st.total.toLocaleString()} total` : `${rows.length.toLocaleString()} rows`}
+                  </div>
+                  {rowHrefTemplate ? <Badge variant="info">click row to open</Badge> : null}
+                </div>
+                <div style={{ overflowX: 'auto', border: `1px solid ${colors.border.subtle}`, borderRadius: 10 }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                    <thead>
+                      <tr style={{ textAlign: 'left', background: colors.bg.muted }}>
+                        {cols.map((c: any, idx: number) => (
+                          <th key={idx} style={{ padding: '8px 10px' }}>{String(c?.label || c?.field || '')}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows.map((r: any, idx: number) => {
+                        const href = rowHrefTemplate ? applyTemplate(rowHrefTemplate, r) : '';
+                        return (
+                          <tr
+                            key={String(r?.id || idx)}
+                            style={{ borderTop: `1px solid ${colors.border.subtle}`, cursor: href ? 'pointer' : 'default' }}
+                            onClick={() => {
+                              if (!href) return;
+                              openRouteDrill({ href, title: `${String(w.title || 'Table')} • ${String(r?.name || r?.id || '')}`.trim() });
+                            }}
+                          >
+                            {cols.map((c: any, j: number) => (
+                              <td key={j} style={{ padding: '8px 10px', whiteSpace: 'nowrap' }}>
+                                {j === 0 && href ? (
+                                  <a
+                                    href={href}
+                                    style={{ color: colors.accent.default, textDecoration: 'none' }}
+                                    onClick={(e: any) => {
+                                      e.preventDefault();
+                                      e.stopPropagation?.();
+                                      openRouteDrill({ href, title: `${String(w.title || 'Table')} • ${String(r?.name || r?.id || '')}`.trim() });
+                                    }}
+                                  >
+                                    {renderCell(r, c)}
+                                  </a>
+                                ) : renderCell(r, c)}
+                              </td>
+                            ))}
+                          </tr>
+                        );
+                      })}
+                      {rows.length === 0 ? (
+                        <tr>
+                          <td colSpan={Math.max(1, cols.length)} style={{ padding: '10px', color: colors.text.muted }}>
+                            No rows
+                          </td>
+                        </tr>
+                      ) : null}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+          </div>
+        </Card>
+      </div>
+    );
+  };
+
+  const renderMetricTableWidget = (w: any, ctx: WidgetRenderContext) => {
+    const { spanClass } = ctx;
+    const st = metricTables[w.key];
+    const rows = Array.isArray(st?.rows) ? st?.rows : [];
+    const pres = w?.presentation || {};
+    const cols = Array.isArray(pres.columns) ? pres.columns : [];
+    const rowHrefTemplate = typeof pres.rowHrefTemplate === 'string' ? pres.rowHrefTemplate : '';
+
+    const renderCell = (row: any, col: any) => {
+      const field = String(col?.field || '').trim();
+      const fmt = String(col?.format || '').toLowerCase();
+      const raw = field ? getByPath(row, field) : undefined;
+      if (fmt === 'usd') return formatNumber(Number(raw ?? 0), 'usd');
+      if (fmt === 'number') return formatNumber(Number(raw ?? 0), 'number');
+      if (fmt === 'datetime' || fmt === 'date') {
+        if (!raw) return '—';
+        const d = new Date(String(raw));
+        if (!Number.isFinite(d.getTime())) return String(raw);
+        return fmt === 'date' ? d.toLocaleDateString() : d.toLocaleString();
+      }
+      return raw == null ? '—' : String(raw);
+    };
+
+    return (
+      <div key={w.key} className={spanClass}>
+        <Card title={w.title || 'Table'}>
+          <div style={{ padding: 14 }}>
+            {st?.loading ? <Spinner /> : (
+              <>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                  <div style={{ fontSize: 12, color: colors.text.muted }}>
+                    {typeof st?.total === 'number' ? `${st.total.toLocaleString()} total` : `${rows.length.toLocaleString()} rows`}
+                  </div>
+                  {rowHrefTemplate ? <Badge variant="info">click row to open</Badge> : null}
+                </div>
+                <div style={{ overflowX: 'auto', border: `1px solid ${colors.border.subtle}`, borderRadius: 10 }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                    <thead>
+                      <tr style={{ textAlign: 'left', background: colors.bg.muted }}>
+                        {cols.map((c: any, idx: number) => (
+                          <th key={idx} style={{ padding: '8px 10px' }}>{String(c?.label || c?.field || '')}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows.map((r: any, idx: number) => {
+                        const href = rowHrefTemplate ? applyTemplate(rowHrefTemplate, r) : '';
+                        return (
+                          <tr
+                            key={String(r?.id || idx)}
+                            style={{ borderTop: `1px solid ${colors.border.subtle}`, cursor: href ? 'pointer' : 'default' }}
+                            onClick={() => {
+                              if (!href) return;
+                              openRouteDrill({ href, title: `${String(w.title || 'Table')} • ${String(r?.name || r?.id || '')}`.trim() });
+                            }}
+                          >
+                            {cols.map((c: any, j: number) => (
+                              <td key={j} style={{ padding: '8px 10px', whiteSpace: 'nowrap' }}>
+                                {j === 0 && href ? (
+                                  <a
+                                    href={href}
+                                    style={{ color: colors.accent.default, textDecoration: 'none' }}
+                                    onClick={(e: any) => {
+                                      e.preventDefault();
+                                      e.stopPropagation?.();
+                                      openRouteDrill({ href, title: `${String(w.title || 'Table')} • ${String(r?.name || r?.id || '')}`.trim() });
+                                    }}
+                                  >
+                                    {renderCell(r, c)}
+                                  </a>
+                                ) : renderCell(r, c)}
+                              </td>
+                            ))}
+                          </tr>
+                        );
+                      })}
+                      {rows.length === 0 ? (
+                        <tr>
+                          <td colSpan={Math.max(1, cols.length)} style={{ padding: '10px', color: colors.text.muted }}>
+                            No rows
+                          </td>
+                        </tr>
+                      ) : null}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+          </div>
+        </Card>
+      </div>
+    );
+  };
+
+  const renderLineWidget = (w: any, ctx: WidgetRenderContext) => {
+    const { spanClass, fmt } = ctx;
+    const st = lineSeries[w.key];
+    const series = st?.series || [];
+    const currentBucket: Bucket = (lineBucketByWidgetKey[w.key] || w?.seriesSpec?.bucket || 'day') as Bucket;
+    const overlayEnabled = Boolean(w?.presentation?.timelineOverlay);
+    const bucketControl = (
+      <Select
+        value={currentBucket}
+        onChange={(v: any) => setLineBucketByWidgetKey((p) => ({ ...p, [w.key]: selectValue(v) as Bucket }))}
+        options={[
+          { value: 'day', label: 'Daily' },
+          { value: 'week', label: 'Weekly' },
+          { value: 'month', label: 'Monthly' },
+        ]}
+      />
+    );
+    return (
+      <div key={w.key} className={spanClass}>
+        {st?.loading ? (
+          <Card title={w.title || 'Line'}>
+            <div style={{ padding: 18 }}><Spinner /></div>
+          </Card>
+        ) : (
+          <MultiLineChart
+            title={w.title || 'Line'}
+            format={fmt as any}
+            series={series}
+            bucket={currentBucket}
+            bucketControl={bucketControl}
+            timelineOverlay={overlayEnabled}
+            timelineEvents={overlayEnabled ? timelineEvents : []}
+            onDrill={(d) => runDrillDescriptor(d)}
+            onDrillMenu={(args) => openDrillMenu(args)}
+          />
+        )}
+      </div>
+    );
+  };
+
+  const widgetRenderers: Record<string, (w: any, ctx: WidgetRenderContext) => React.ReactNode> = {
+    kpi_catalog: renderKpiCatalogWidget,
+    kpi: renderKpiWidget,
+    gauge: renderGaugeWidget,
+    semi_gauge: renderSemiGaugeWidget,
+    tabs: renderTabsWidget,
+    pie: renderPieWidget,
+    api_pie: renderApiPieWidget,
+    api_table: renderApiTableWidget,
+    metric_table: renderMetricTableWidget,
+    line: renderLineWidget,
+  };
+
+  const renderWidget = (w: any) => {
+    const metricKey = String(w?.query?.metricKey || w?.series?.[0]?.query?.metricKey || w?.seriesSpec?.metricKey || '');
+    const cat = metricKey ? catalogByKey[metricKey] : undefined;
+    const fmt = (w?.presentation?.format === 'usd' || cat?.unit === 'usd') ? 'usd' : 'number';
+    const spanClass = resolveWidgetSpanClass(w);
+    const renderer = widgetRenderers[w.kind];
+    if (renderer) return renderer(w, { spanClass, metricKey, fmt, cat });
+    return (
+      <div key={w.key} className={spanClass}>
+        <Card title={w.title || w.kind}>
+          <div style={{ padding: 14, opacity: 0.75, fontSize: 12 }}>
+            Unsupported widget kind: {String(w.kind)}
+          </div>
+        </Card>
+      </div>
+    );
+  };
 
   return (
     <Page title="Dashboards">
@@ -2604,6 +3659,60 @@ export function Dashboards(props: DashboardsProps = {}) {
         .kpi-mini-title { font-size: 12px; opacity: 0.82; line-height: 1.2; }
         .kpi-mini-val { font-size: 20px; font-weight: 800; letter-spacing: -0.02em; }
         .kpi-mini-badges { display: flex; gap: 6px; flex-wrap: wrap; }
+        .gauge { padding: 14px; display: grid; grid-template-columns: 46px 1fr; gap: 14px; align-items: center; }
+        .gauge-track { height: 120px; width: 46px; border-radius: 999px; position: relative; overflow: hidden; }
+        .gauge-fill { position: absolute; bottom: 0; left: 0; right: 0; border-radius: 999px; }
+        .gauge-content { display: flex; flex-direction: column; gap: 6px; }
+        .gauge-title { font-size: 12px; opacity: 0.75; }
+        .gauge-value { font-size: 26px; font-weight: 800; letter-spacing: -0.02em; }
+        .gauge-sub { font-size: 12px; opacity: 0.75; }
+        .semi-gauge { padding: 14px; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+        .semi-gauge-svg { width: 100%; max-width: 180px; height: auto; aspect-ratio: 2 / 1; margin: 0 auto; display: block; overflow: visible; }
+        .semi-gauge-content { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 4px; }
+        .semi-gauge-title { font-size: 12px; opacity: 0.75; }
+        .semi-gauge-value { font-size: 26px; font-weight: 800; letter-spacing: -0.02em; }
+        .semi-gauge-sub { font-size: 12px; opacity: 0.75; }
+        .tabs-widget { display: flex; flex-direction: column; gap: 12px; }
+        .tabs-row { display: flex; gap: 10px; flex-wrap: wrap; }
+        .tabs-tab {
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          padding: 8px 12px;
+          border-radius: 12px;
+          border: 1px solid ${colors.border.subtle};
+          background: ${colors.bg.muted};
+          font-size: 12px;
+          color: ${colors.text.primary};
+          cursor: pointer;
+        }
+        .tabs-tab--active {
+          background: ${colors.bg.surface};
+          border-color: ${colors.border.strong};
+          box-shadow: 0 8px 20px rgba(0,0,0,0.16);
+        }
+        .tabs-summary { display: flex; flex-direction: column; gap: 4px; }
+        .tabs-summary-label { font-size: 12px; opacity: 0.7; }
+        .tabs-summary-value { font-size: 28px; font-weight: 800; letter-spacing: -0.02em; }
+        .tabs-chart {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(44px, 1fr));
+          gap: 10px;
+          align-items: end;
+          min-height: 110px;
+        }
+        .tabs-bar-wrap { display: flex; flex-direction: column; align-items: center; gap: 6px; width: 100%; }
+        .tabs-bar-container { height: 80px; width: 100%; display: flex; align-items: flex-end; justify-content: center; }
+        .tabs-bar {
+          width: 100%;
+          max-width: 44px;
+          min-height: 6px;
+          border-radius: 999px;
+          background: ${colors.accent.default};
+        }
+        .tabs-bar-value { font-size: 11px; opacity: 0.75; min-height: 12px; }
+        .tabs-bar-label { font-size: 11px; opacity: 0.7; text-align: center; }
+        .tabs-empty { font-size: 12px; opacity: 0.7; grid-column: 1 / -1; }
         .donut-wrap { display: grid; grid-template-columns: 260px 1fr; gap: 14px; align-items: center; }
         @media (max-width: 900px) { .donut-wrap { grid-template-columns: 1fr; } }
         .donut { width: 100%; height: 240px; }
@@ -2722,643 +3831,7 @@ export function Dashboards(props: DashboardsProps = {}) {
             </div>
           ) : null}
 
-          {definition ? (
-            widgetList.map((w: any) => {
-              const grid = w.grid || {};
-              const span = typeof grid.w === 'number' ? grid.w : (w.kind === 'kpi' ? 3 : (w.kind === 'pie' || w.kind === 'api_pie') ? 6 : 12);
-              const spanClass = span === 12 ? 'span-12' : span === 6 ? 'span-6' : span === 4 ? 'span-4' : 'span-3';
-
-              const metricKey = String(w?.query?.metricKey || w?.series?.[0]?.query?.metricKey || w?.seriesSpec?.metricKey || '');
-              const cat = metricKey ? catalogByKey[metricKey] : undefined;
-              const fmt = (w?.presentation?.format === 'usd' || cat?.unit === 'usd') ? 'usd' : 'number';
-
-              if (w.kind === 'kpi_catalog') {
-                const st = kpiCatalogTotals[w.key];
-                const pres = w?.presentation || {};
-                const rawEntityKind = typeof pres?.entityKind === 'string' ? pres.entityKind.trim() : '';
-                const isAutoEntityKind = rawEntityKind === '' || rawEntityKind.toLowerCase() === 'auto';
-                const entityKind = !isAutoEntityKind ? rawEntityKind : '';
-                const onlyWithPoints = pres?.onlyWithPoints === true;
-                const ownerKind = typeof pres?.owner?.kind === 'string' ? pres.owner.kind.trim().toLowerCase() : '';
-                const ownerId = typeof pres?.owner?.id === 'string' ? pres.owner.id.trim() : '';
-                const hasOwnerFilter = Boolean(ownerKind && ownerId);
-                // Support filtering by entity kinds (metrics that support these entity kinds)
-                const filterEntityKinds: string[] = Array.isArray(pres?.filterEntityKinds)
-                  ? (pres.filterEntityKinds as any[]).map((x) => String(x || '').trim().toLowerCase()).filter(Boolean)
-                  : [];
-                const hasEntityKindsFilter = filterEntityKinds.length > 0;
-                // Support filtering by category
-                const filterCategories: string[] = Array.isArray(pres?.filterCategories)
-                  ? (pres.filterCategories as any[]).map((x) => String(x || '').trim().toLowerCase()).filter(Boolean)
-                  : [];
-                const hasCategories = filterCategories.length > 0;
-
-                const items = Object.values(catalogByKey || {});
-                const filtered = items
-                  .filter((it) => {
-                    // Filter by owner (e.g., only feature pack metrics)
-                    if (hasOwnerFilter) {
-                      const ik = typeof (it as any)?.owner?.kind === 'string' ? String((it as any).owner.kind).trim().toLowerCase() : '';
-                      const iid = typeof (it as any)?.owner?.id === 'string' ? String((it as any).owner.id).trim() : '';
-                      if (ik !== ownerKind || iid !== ownerId) return false;
-                    }
-                    // Filter by entity kinds (metrics that support any of these entity kinds)
-                    if (hasEntityKindsFilter) {
-                      const metricEntityKinds = Array.isArray(it.entity_kinds)
-                        ? (it.entity_kinds as any[]).map((x) => String(x || '').trim().toLowerCase())
-                        : [];
-                      const hasMatch = filterEntityKinds.some((ek) => metricEntityKinds.includes(ek));
-                      if (!hasMatch) return false;
-                    }
-                    // Filter by category
-                    if (hasCategories) {
-                      const cat = typeof it.category === 'string' ? it.category.trim().toLowerCase() : '';
-                      if (!filterCategories.includes(cat)) return false;
-                    }
-                    // If entityKind is explicitly set (not auto), filter metrics that support it
-                    if (!isAutoEntityKind) {
-                      const kinds = Array.isArray(it.entity_kinds) ? it.entity_kinds : [];
-                      // If the metric declares supported entity kinds, respect it.
-                      // If it doesn't, we cannot safely assume it works for the chosen entityKind.
-                      if (kinds.length === 0) return false;
-                      if (!kinds.includes(entityKind)) return false;
-                    }
-                    if (onlyWithPoints && Number(it.pointsCount || 0) <= 0) return false;
-                    return true;
-                  })
-                  .sort((a, b) => String(a.label || a.key).localeCompare(String(b.label || b.key)));
-
-                return (
-                  <div key={w.key} className="span-12">
-                    <Card title={w.title || 'KPIs'}>
-                      <div style={{ padding: 14 }}>
-                        {st?.loading ? (
-                          <Spinner />
-                        ) : (
-                          <div className="kpi-catalog-grid">
-                            {filtered.map((it) => {
-                              const mk = it.key;
-                              const val = Number(st?.totalsByMetricKey?.[mk] ?? 0);
-                              const format = (it.unit === 'usd') ? 'usd' : 'number';
-                              const iconName = String(it.icon || fallbackIconForMetric(it.category) || '');
-                              const Icon = resolvePlatformIcon(iconName);
-                              const iconColor = String(it.icon_color || colors.accent.default);
-                              const t = effectiveTime(w);
-                              const ek = isAutoEntityKind ? pickEntityKindForMetric(it) : entityKind;
-                              const pf: any = { metricKey: mk };
-                              if (ek) pf.entityKind = ek;
-                              if (t) { pf.start = t.start; pf.end = t.end; }
-                              return (
-                                <div
-                                  key={mk}
-                                  className="kpi-mini"
-                                  style={{
-                                    border: `1px solid ${colors.border.subtle}`,
-                                    background: colors.bg.surface,
-                                    cursor: 'pointer',
-                                  }}
-                                  title="Click to drill down"
-                                  role="button"
-                                  tabIndex={0}
-                                  onClick={() => {
-                                    runDrillDescriptor({
-                                      kind: 'pointFilter',
-                                      pointFilter: pf,
-                                      title: `${String(w.title || 'KPIs')} • ${String(it.label || mk)}`,
-                                      format: format as any,
-                                    });
-                                  }}
-                                  onKeyDown={(e) => {
-                                    if (e.key !== 'Enter' && e.key !== ' ') return;
-                                    e.preventDefault();
-                                    runDrillDescriptor({
-                                      kind: 'pointFilter',
-                                      pointFilter: pf,
-                                      title: `${String(w.title || 'KPIs')} • ${String(it.label || mk)}`,
-                                      format: format as any,
-                                    });
-                                  }}
-                                >
-                                  <div className="kpi-mini-top">
-                                    <div style={{ minWidth: 0 }}>
-                                      <div className="kpi-mini-title" title={mk}>{it.label || mk}</div>
-                                      <div className="kpi-mini-val">{formatNumber(val, format as any)}</div>
-                                    </div>
-                                    {Icon ? (
-                                      <div
-                                        className="kpi-icon"
-                                        style={{
-                                          width: 34,
-                                          height: 34,
-                                          borderRadius: radius.lg,
-                                          border: `1px solid ${colors.border.subtle}`,
-                                          background: colors.bg.muted,
-                                          color: iconColor,
-                                        }}
-                                      >
-                                        <Icon size={18} style={{ color: iconColor }} />
-                                      </div>
-                                    ) : null}
-                                  </div>
-                                  <div className="kpi-mini-badges">
-                                    {it.category ? <Badge>{it.category}</Badge> : null}
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        )}
-                      </div>
-                    </Card>
-                  </div>
-                );
-              }
-
-              if (w.kind === 'kpi') {
-                const st = kpiValues[w.key];
-                const val = Number(st?.value ?? 0);
-                const prev = typeof st?.prev === 'number' ? st.prev : null;
-                let pct = 0;
-                if (prev !== null && prev > 0) pct = ((val - prev) / prev) * 100;
-
-                const iconName = String(w?.presentation?.icon || cat?.icon || '');
-                const Icon = resolvePlatformIcon(iconName);
-                const iconColor = String(w?.presentation?.iconColor || cat?.icon_color || colors.accent.default);
-                const action = w?.presentation?.action;
-                const t = effectiveTime(w);
-                const valueSource = w?.presentation?.valueSource;
-
-                const buildPointFilter = (): PointFilter | null => {
-                  // 1) valueSource-driven metric KPIs
-                  if (valueSource?.kind === 'metrics_sum_last_per_entity' && typeof valueSource.metricKey === 'string') {
-                    const pf: PointFilter = { metricKey: String(valueSource.metricKey).trim() };
-                    const ek = typeof valueSource.entityKind === 'string' ? valueSource.entityKind.trim() : (typeof w?.query?.entityKind === 'string' ? w.query.entityKind.trim() : '');
-                    if (ek) pf.entityKind = ek;
-                    if (t) { pf.start = t.start; pf.end = t.end; }
-                    return pf;
-                  }
-                  if (valueSource?.kind === 'metrics_sum_agg_per_entity' && typeof valueSource.metricKey === 'string') {
-                    const pf: PointFilter = { metricKey: String(valueSource.metricKey).trim() };
-                    const ek = typeof valueSource.entityKind === 'string' ? valueSource.entityKind.trim() : (typeof w?.query?.entityKind === 'string' ? w.query.entityKind.trim() : '');
-                    if (ek) pf.entityKind = ek;
-                    if (t) { pf.start = t.start; pf.end = t.end; }
-                    return pf;
-                  }
-                  // 2) direct metric query KPIs
-                  const q = w?.query;
-                  const mk = typeof q?.metricKey === 'string' ? q.metricKey.trim() : '';
-                  if (!mk) return null;
-                  const pf: PointFilter = { metricKey: mk };
-                  if (typeof q.entityKind === 'string' && q.entityKind.trim()) pf.entityKind = q.entityKind.trim();
-                  if (typeof q.entityId === 'string' && q.entityId.trim()) pf.entityId = q.entityId.trim();
-                  if (Array.isArray(q.entityIds)) {
-                    const ids = (q.entityIds as any[]).map((x) => String(x || '').trim()).filter(Boolean);
-                    if (ids.length) pf.entityIds = ids;
-                  }
-                  if (typeof q.dataSourceId === 'string' && q.dataSourceId.trim()) pf.dataSourceId = q.dataSourceId.trim();
-                  if (typeof q.sourceGranularity === 'string' && q.sourceGranularity.trim()) pf.sourceGranularity = q.sourceGranularity.trim();
-                  if (q.params && typeof q.params === 'object') pf.params = q.params as any;
-                  if (q.dimensions && typeof q.dimensions === 'object') pf.dimensions = q.dimensions as any;
-                  if (t) { pf.start = t.start; pf.end = t.end; }
-                  return pf;
-                };
-
-                const drillPointFilter = buildPointFilter();
-                const drillMenu =
-                  valueSource?.kind === 'metrics_sum_last_per_entity_multi' && Array.isArray(valueSource.metricKeys)
-                    ? (valueSource.metricKeys as any[]).map((x) => String(x || '').trim()).filter(Boolean)
-                    : [];
-                const canDrill = Boolean(drillPointFilter) || drillMenu.length > 0;
-
-                return (
-                  <div key={w.key} className={spanClass}>
-                    <Card>
-                      <div
-                        className="kpi"
-                        style={{ cursor: canDrill ? 'pointer' : undefined }}
-                        title={canDrill ? 'Click to drill down' : undefined}
-                        role={canDrill ? 'button' : undefined}
-                        tabIndex={canDrill ? 0 : undefined}
-                        onClick={() => {
-                          if (drillMenu.length > 0) {
-                            openDrillMenu({
-                              title: `${String(w.title || cat?.label || metricKey || 'KPI')}`,
-                              format: fmt as any,
-                              options: drillMenu.map((mk) => {
-                                const pf: PointFilter = { metricKey: mk };
-                                const ek = typeof valueSource.entityKind === 'string' ? valueSource.entityKind.trim() : (typeof w?.query?.entityKind === 'string' ? w.query.entityKind.trim() : '');
-                                if (ek) pf.entityKind = ek;
-                                if (t) { pf.start = t.start; pf.end = t.end; }
-                                return {
-                                  label: mk,
-                                  d: { kind: 'pointFilter', pointFilter: pf, title: `${String(w.title || 'KPI')} • ${mk}`, format: fmt as any },
-                                };
-                              }),
-                            });
-                            return;
-                          }
-                          if (drillPointFilter) {
-                            runDrillDescriptor({
-                              kind: 'pointFilter',
-                              pointFilter: drillPointFilter,
-                              title: `${String(w.title || cat?.label || metricKey || 'KPI')}`,
-                              format: fmt as any,
-                            });
-                            return;
-                          }
-                        if (action?.href) {
-                          const href = String(action.href);
-                          openRouteDrill({ href, title: String(action?.label || w.title || cat?.label || metricKey || 'Details') });
-                        }
-                        }}
-                        onKeyDown={(e) => {
-                          if (!canDrill) return;
-                          if (e.key !== 'Enter' && e.key !== ' ') return;
-                          e.preventDefault();
-                          // Mirror click behavior
-                          if (drillMenu.length > 0) {
-                            openDrillMenu({
-                              title: `${String(w.title || cat?.label || metricKey || 'KPI')}`,
-                              format: fmt as any,
-                              options: drillMenu.map((mk) => {
-                                const pf: PointFilter = { metricKey: mk };
-                                const ek = typeof valueSource.entityKind === 'string' ? valueSource.entityKind.trim() : (typeof w?.query?.entityKind === 'string' ? w.query.entityKind.trim() : '');
-                                if (ek) pf.entityKind = ek;
-                                if (t) { pf.start = t.start; pf.end = t.end; }
-                                return {
-                                  label: mk,
-                                  d: { kind: 'pointFilter', pointFilter: pf, title: `${String(w.title || 'KPI')} • ${mk}`, format: fmt as any },
-                                };
-                              }),
-                            });
-                            return;
-                          }
-                          if (drillPointFilter) {
-                            runDrillDescriptor({
-                              kind: 'pointFilter',
-                              pointFilter: drillPointFilter,
-                              title: `${String(w.title || cat?.label || metricKey || 'KPI')}`,
-                              format: fmt as any,
-                            });
-                          }
-                        }}
-                      >
-                        <div className="kpi-head">
-                          <div>
-                            <div className="kpi-title">{w.title || cat?.label || metricKey}</div>
-                            <div className="kpi-val">{st?.loading ? '—' : formatNumber(val, fmt as any)}</div>
-                          </div>
-                          {Icon ? (
-                            <div
-                              className="kpi-icon"
-                              style={{
-                                borderRadius: radius.lg,
-                                border: `1px solid ${colors.border.subtle}`,
-                                background: colors.bg.muted,
-                                color: iconColor,
-                              }}
-                            >
-                              <Icon size={22} style={{ color: iconColor }} />
-                            </div>
-                          ) : null}
-                        </div>
-                        {prev !== null ? (
-                          <div className="kpi-delta">
-                            <span style={{ color: pct >= 0 ? '#22c55e' : '#ef4444' }}>{formatNumber(pct, 'percent')}</span>
-                            <span style={{ opacity: 0.7 }}>vs previous period</span>
-                          </div>
-                        ) : null}
-                        {action?.href && action?.label ? (
-                          <a
-                            className="kpi-action"
-                            href={String(action.href)}
-                            onClick={(e: any) => {
-                              // Keep UX in-dashboard: open in the drill panel, not a full navigation.
-                              e.preventDefault();
-                              e.stopPropagation?.();
-                              openRouteDrill({ href: String(action.href), title: String(action.label) });
-                            }}
-                          >
-                            {String(action.label)}
-                          </a>
-                        ) : (
-                          <span className="kpi-action kpi-action--placeholder" aria-hidden="true">
-                            &nbsp;
-                          </span>
-                        )}
-                      </div>
-                    </Card>
-                  </div>
-                );
-              }
-
-              if (w.kind === 'pie') {
-                const st = pieSlices[w.key];
-                const slices = Array.isArray(st?.slices) ? st?.slices : [];
-                const otherLabel = String(st?.otherLabel || w?.presentation?.otherLabel || 'Other');
-
-                const onSliceClick = async (slice: any) => {
-                  const drill = slice?.drill;
-                  if (!drill || !drill.pointFilter) return;
-                  await runDrilldown({ pointFilter: drill.pointFilter, title: drill.title, format: drill.format, page: 1 });
-                };
-
-                return (
-                  <div key={w.key} className={spanClass}>
-                    <Card title={w.title || 'Pie'}>
-                      <div style={{ padding: 14 }}>
-                        {!st || st?.loading ? <Spinner /> : <Donut slices={slices as any} format={fmt as any} onSliceClick={onSliceClick} />}
-                        {st && !st?.loading && slices.some((s: any) => s?.raw === '__other__') ? (
-                          <div style={{ marginTop: 10, fontSize: 12, color: colors.text.muted }}>
-                            Tip: "{otherLabel}" is an aggregate bucket; drilldown is available on named slices only (for now).
-                          </div>
-                        ) : null}
-                      </div>
-                    </Card>
-                  </div>
-                );
-              }
-
-              if (w.kind === 'api_pie') {
-                const st = apiPieSlices[w.key];
-                const slices = Array.isArray(st?.slices) ? st?.slices : [];
-                const otherLabel = String(st?.otherLabel || w?.presentation?.otherLabel || 'Other');
-                const format = (w?.presentation?.format === 'usd') ? 'usd' : 'number';
-                const error = typeof st?.error === 'string' ? st.error : '';
-
-                const onSliceClick = async (slice: any) => {
-                  const href = typeof slice?.href === 'string' ? slice.href : '';
-                  if (!href) return;
-                  openRouteDrill({ href, title: `${String(w.title || 'Chart')} • ${String(slice?.label || '')}`.trim() });
-                };
-
-                return (
-                  <div key={w.key} className={spanClass}>
-                    <Card title={w.title || 'Pie'}>
-                      <div style={{ padding: 14 }}>
-                        {!st || st?.loading ? <Spinner /> : (
-                          error ? (
-                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: 240 }}>
-                              <div style={{ fontSize: 13, color: colors.text.muted, textAlign: 'center', maxWidth: 520 }}>
-                                <div style={{ fontWeight: 600, color: colors.text.primary, marginBottom: 6 }}>Could not load chart</div>
-                                <div>{error}</div>
-                                <div style={{ marginTop: 8, fontSize: 12 }}>
-                                  Tip: open <code>/api/crm/reports/pipeline-health</code> in a new tab to see the raw response.
-                                </div>
-                              </div>
-                            </div>
-                          ) : (
-                            <Donut slices={slices as any} format={format as any} onSliceClick={onSliceClick} />
-                          )
-                        )}
-                        {st && !st?.loading && slices.some((s: any) => s?.raw === '__other__') ? (
-                          <div style={{ marginTop: 10, fontSize: 12, color: colors.text.muted }}>
-                            Tip: "{otherLabel}" is an aggregate bucket; click named slices to open filtered lists.
-                          </div>
-                        ) : null}
-                      </div>
-                    </Card>
-                  </div>
-                );
-              }
-
-              if (w.kind === 'api_table') {
-                const st = apiTables[w.key];
-                const rows = Array.isArray(st?.rows) ? st?.rows : [];
-                const pres = w?.presentation || {};
-                const cols = Array.isArray(pres.columns) ? pres.columns : [];
-                const rowHrefTemplate = typeof pres.rowHrefTemplate === 'string' ? pres.rowHrefTemplate : '';
-
-                const renderCell = (row: any, col: any) => {
-                  const field = String(col?.field || '').trim();
-                  const label = String(col?.label || field || '');
-                  const fmt = String(col?.format || '').toLowerCase();
-                  const raw = field ? getByPath(row, field) : undefined;
-                  if (fmt === 'usd') return formatNumber(Number(raw ?? 0), 'usd');
-                  if (fmt === 'number') return formatNumber(Number(raw ?? 0), 'number');
-                  if (fmt === 'datetime' || fmt === 'date') {
-                    if (!raw) return '—';
-                    const d = new Date(String(raw));
-                    if (!Number.isFinite(d.getTime())) return String(raw);
-                    return fmt === 'date' ? d.toLocaleDateString() : d.toLocaleString();
-                  }
-                  return raw == null ? '—' : String(raw);
-                };
-
-                return (
-                  <div key={w.key} className={spanClass}>
-                    <Card title={w.title || 'Table'}>
-                      <div style={{ padding: 14 }}>
-                        {st?.loading ? <Spinner /> : (
-                          <>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                              <div style={{ fontSize: 12, color: colors.text.muted }}>
-                                {typeof st?.total === 'number' ? `${st.total.toLocaleString()} total` : `${rows.length.toLocaleString()} rows`}
-                              </div>
-                              {rowHrefTemplate ? <Badge variant="info">click row to open</Badge> : null}
-                            </div>
-                            <div style={{ overflowX: 'auto', border: `1px solid ${colors.border.subtle}`, borderRadius: 10 }}>
-                              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-                                <thead>
-                                  <tr style={{ textAlign: 'left', background: colors.bg.muted }}>
-                                    {cols.map((c: any, idx: number) => (
-                                      <th key={idx} style={{ padding: '8px 10px' }}>{String(c?.label || c?.field || '')}</th>
-                                    ))}
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {rows.map((r: any, idx: number) => {
-                                    const href = rowHrefTemplate ? applyTemplate(rowHrefTemplate, r) : '';
-                                    return (
-                                      <tr
-                                        key={String(r?.id || idx)}
-                                        style={{ borderTop: `1px solid ${colors.border.subtle}`, cursor: href ? 'pointer' : 'default' }}
-                                        onClick={() => {
-                                          if (!href) return;
-                                          openRouteDrill({ href, title: `${String(w.title || 'Table')} • ${String(r?.name || r?.id || '')}`.trim() });
-                                        }}
-                                      >
-                                        {cols.map((c: any, j: number) => (
-                                          <td key={j} style={{ padding: '8px 10px', whiteSpace: 'nowrap' }}>
-                                            {j === 0 && href ? (
-                                              <a
-                                                href={href}
-                                                style={{ color: colors.accent.default, textDecoration: 'none' }}
-                                                onClick={(e: any) => {
-                                                  e.preventDefault();
-                                                  e.stopPropagation?.();
-                                                  openRouteDrill({ href, title: `${String(w.title || 'Table')} • ${String(r?.name || r?.id || '')}`.trim() });
-                                                }}
-                                              >
-                                                {renderCell(r, c)}
-                                              </a>
-                                            ) : renderCell(r, c)}
-                                          </td>
-                                        ))}
-                                      </tr>
-                                    );
-                                  })}
-                                  {rows.length === 0 ? (
-                                    <tr>
-                                      <td colSpan={Math.max(1, cols.length)} style={{ padding: '10px', color: colors.text.muted }}>
-                                        No rows
-                                      </td>
-                                    </tr>
-                                  ) : null}
-                                </tbody>
-                              </table>
-                            </div>
-                          </>
-                        )}
-                      </div>
-                    </Card>
-                  </div>
-                );
-              }
-
-              if (w.kind === 'metric_table') {
-                const st = metricTables[w.key];
-                const rows = Array.isArray(st?.rows) ? st?.rows : [];
-                const pres = w?.presentation || {};
-                const cols = Array.isArray(pres.columns) ? pres.columns : [];
-                const rowHrefTemplate = typeof pres.rowHrefTemplate === 'string' ? pres.rowHrefTemplate : '';
-
-                const renderCell = (row: any, col: any) => {
-                  const field = String(col?.field || '').trim();
-                  const fmt = String(col?.format || '').toLowerCase();
-                  const raw = field ? getByPath(row, field) : undefined;
-                  if (fmt === 'usd') return formatNumber(Number(raw ?? 0), 'usd');
-                  if (fmt === 'number') return formatNumber(Number(raw ?? 0), 'number');
-                  if (fmt === 'datetime' || fmt === 'date') {
-                    if (!raw) return '—';
-                    const d = new Date(String(raw));
-                    if (!Number.isFinite(d.getTime())) return String(raw);
-                    return fmt === 'date' ? d.toLocaleDateString() : d.toLocaleString();
-                  }
-                  return raw == null ? '—' : String(raw);
-                };
-
-                return (
-                  <div key={w.key} className={spanClass}>
-                    <Card title={w.title || 'Table'}>
-                      <div style={{ padding: 14 }}>
-                        {st?.loading ? <Spinner /> : (
-                          <>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                              <div style={{ fontSize: 12, color: colors.text.muted }}>
-                                {typeof st?.total === 'number' ? `${st.total.toLocaleString()} total` : `${rows.length.toLocaleString()} rows`}
-                              </div>
-                              {rowHrefTemplate ? <Badge variant="info">click row to open</Badge> : null}
-                            </div>
-                            <div style={{ overflowX: 'auto', border: `1px solid ${colors.border.subtle}`, borderRadius: 10 }}>
-                              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-                                <thead>
-                                  <tr style={{ textAlign: 'left', background: colors.bg.muted }}>
-                                    {cols.map((c: any, idx: number) => (
-                                      <th key={idx} style={{ padding: '8px 10px' }}>{String(c?.label || c?.field || '')}</th>
-                                    ))}
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {rows.map((r: any, idx: number) => {
-                                    const href = rowHrefTemplate ? applyTemplate(rowHrefTemplate, r) : '';
-                                    return (
-                                      <tr
-                                        key={String(r?.id || idx)}
-                                        style={{ borderTop: `1px solid ${colors.border.subtle}`, cursor: href ? 'pointer' : 'default' }}
-                                        onClick={() => {
-                                          if (!href) return;
-                                          openRouteDrill({ href, title: `${String(w.title || 'Table')} • ${String(r?.name || r?.id || '')}`.trim() });
-                                        }}
-                                      >
-                                        {cols.map((c: any, j: number) => (
-                                          <td key={j} style={{ padding: '8px 10px', whiteSpace: 'nowrap' }}>
-                                            {j === 0 && href ? (
-                                              <a
-                                                href={href}
-                                                style={{ color: colors.accent.default, textDecoration: 'none' }}
-                                                onClick={(e: any) => {
-                                                  e.preventDefault();
-                                                  e.stopPropagation?.();
-                                                  openRouteDrill({ href, title: `${String(w.title || 'Table')} • ${String(r?.name || r?.id || '')}`.trim() });
-                                                }}
-                                              >
-                                                {renderCell(r, c)}
-                                              </a>
-                                            ) : renderCell(r, c)}
-                                          </td>
-                                        ))}
-                                      </tr>
-                                    );
-                                  })}
-                                  {rows.length === 0 ? (
-                                    <tr>
-                                      <td colSpan={Math.max(1, cols.length)} style={{ padding: '10px', color: colors.text.muted }}>
-                                        No rows
-                                      </td>
-                                    </tr>
-                                  ) : null}
-                                </tbody>
-                              </table>
-                            </div>
-                          </>
-                        )}
-                      </div>
-                    </Card>
-                  </div>
-                );
-              }
-
-              if (w.kind === 'line') {
-                const st = lineSeries[w.key];
-                const series = st?.series || [];
-                const currentBucket: Bucket = (lineBucketByWidgetKey[w.key] || w?.seriesSpec?.bucket || 'day') as Bucket;
-                const overlayEnabled = Boolean(w?.presentation?.timelineOverlay);
-                const bucketControl = (
-                  <Select
-                    value={currentBucket}
-                    onChange={(v: any) => setLineBucketByWidgetKey((p) => ({ ...p, [w.key]: selectValue(v) as Bucket }))}
-                    options={[
-                      { value: 'day', label: 'Daily' },
-                      { value: 'week', label: 'Weekly' },
-                      { value: 'month', label: 'Monthly' },
-                    ]}
-                  />
-                );
-                return (
-                  <div key={w.key} className={spanClass}>
-                    {st?.loading ? (
-                      <Card title={w.title || 'Line'}>
-                        <div style={{ padding: 18 }}><Spinner /></div>
-                      </Card>
-                    ) : (
-                      <MultiLineChart
-                        title={w.title || 'Line'}
-                        format={fmt as any}
-                        series={series}
-                        bucket={currentBucket}
-                        bucketControl={bucketControl}
-                        timelineOverlay={overlayEnabled}
-                        timelineEvents={overlayEnabled ? timelineEvents : []}
-                        onDrill={(d) => runDrillDescriptor(d)}
-                        onDrillMenu={(args) => openDrillMenu(args)}
-                      />
-                    )}
-                  </div>
-                );
-              }
-
-              return (
-                <div key={w.key} className={spanClass}>
-                  <Card title={w.title || w.kind}>
-                    <div style={{ padding: 14, opacity: 0.75, fontSize: 12 }}>
-                      Unsupported widget kind: {String(w.kind)}
-                    </div>
-                  </Card>
-                </div>
-              );
-            })
-          ) : null}
+          {definition ? widgetList.map((w: any) => renderWidget(w)) : null}
         </div>
 
         <Modal
@@ -3450,88 +3923,205 @@ export function Dashboards(props: DashboardsProps = {}) {
           </div>
         </Modal>
 
-        <Modal
-          open={drillOpen}
-          onClose={() => setDrillOpen(false)}
-          title={drillTitle}
-          description={`Underlying points (report tz: ${drillReportTz})`}
-        >
-          <div style={{ padding: 12 }}>
-            {drillError ? <div style={{ color: '#ef4444', fontSize: 13, marginBottom: 10 }}>{drillError}</div> : null}
-            {drillLoading ? <Spinner /> : (
-              <>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 10 }}>
-                  <div style={{ fontSize: 12, color: colors.text.muted }}>
-                    {drillPagination.total.toLocaleString()} points
+        {/* Floating metrics drill panel (center popup with minimize/maximize) */}
+        {drillOpen ? (
+          drillMinimized ? (
+            /* Minimized bar at bottom center */
+            <div
+              role="button"
+              tabIndex={0}
+              onClick={() => setDrillMinimized(false)}
+              onKeyDown={(e) => {
+                if (e.key !== 'Enter' && e.key !== ' ') return;
+                e.preventDefault();
+                setDrillMinimized(false);
+              }}
+              style={{
+                position: 'fixed',
+                left: '50%',
+                transform: 'translateX(-50%)',
+                bottom: 16,
+                zIndex: 100000,
+                minWidth: 280,
+                maxWidth: 'min(520px, calc(100vw - 32px))',
+                padding: '10px 16px',
+                borderRadius: 14,
+                border: `1px solid ${colors.border.subtle}`,
+                background: colors.bg.muted,
+                boxShadow: '0 24px 48px rgba(0,0,0,0.35)',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 12,
+              }}
+            >
+              <div style={{ fontWeight: 600, fontSize: 13, color: colors.text.primary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {drillTitle}
+              </div>
+              <div style={{ fontSize: 11, color: colors.text.muted, flexShrink: 0 }}>Click to expand</div>
+            </div>
+          ) : (
+            /* Center popup overlay */
+            <>
+              {/* Backdrop */}
+              <div
+                onClick={() => setDrillMinimized(true)}
+                style={{
+                  position: 'fixed',
+                  inset: 0,
+                  zIndex: 99999,
+                  backgroundColor: 'rgba(0,0,0,0.45)',
+                  backdropFilter: 'blur(2px)',
+                }}
+              />
+              {/* Center popup container */}
+              <div
+                style={{
+                  position: 'fixed',
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  zIndex: 100000,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  padding: drillMaximized ? 0 : 24,
+                  pointerEvents: 'none',
+                }}
+              >
+                {/* Popup panel */}
+                <div
+                  style={{
+                    pointerEvents: 'auto',
+                    width: drillMaximized ? '100%' : '80vw',
+                    maxWidth: drillMaximized ? '100%' : '1400px',
+                    height: drillMaximized ? '100%' : 'auto',
+                    maxHeight: drillMaximized ? '100%' : 'calc(100vh - 48px)',
+                    background: colors.bg.surface,
+                    borderRadius: drillMaximized ? 0 : 16,
+                    border: drillMaximized ? 'none' : `1px solid ${colors.border.subtle}`,
+                    boxShadow: drillMaximized ? 'none' : '0 24px 48px rgba(0,0,0,0.35)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    overflow: 'hidden',
+                  }}
+                >
+                  {/* Header */}
+                  <div
+                    style={{
+                      padding: '16px 20px',
+                      borderBottom: `1px solid ${colors.border.subtle}`,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: 16,
+                      flexShrink: 0,
+                    }}
+                  >
+                    <div style={{ overflow: 'hidden' }}>
+                      <div style={{ fontWeight: 700, fontSize: 16, color: colors.text.primary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {drillTitle}
+                      </div>
+                      <div style={{ fontSize: 11, color: colors.text.muted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        Underlying points (report tz: {drillReportTz})
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexShrink: 0 }}>
+                      <Button variant="secondary" onClick={() => setDrillMinimized(true)}>
+                        Minimize
+                      </Button>
+                      <Button variant="secondary" onClick={() => setDrillMaximized(!drillMaximized)}>
+                        {drillMaximized ? 'Restore' : 'Maximize'}
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        disabled={!drillLastFilter}
+                        onClick={() => {
+                          if (!drillLastFilter) return;
+                          const prefill = encodeReportPrefill({ title: drillTitle, format: drillFormat, pointFilter: drillLastFilter });
+                          const href = `/reports/builder?prefill=${prefill}`;
+                          navigate(href);
+                        }}
+                      >
+                        Open in Report Writer
+                      </Button>
+                      <Button variant="secondary" onClick={() => { setDrillOpen(false); setDrillMaximized(false); }}>
+                        Close
+                      </Button>
+                    </div>
                   </div>
-                  <div style={{ display: 'flex', gap: 8 }}>
-                    <Button
-                      variant="secondary"
-                      disabled={!drillLastFilter}
-                      onClick={() => {
-                        if (!drillLastFilter) return;
-                        const prefill = encodeReportPrefill({ title: drillTitle, format: drillFormat, pointFilter: drillLastFilter });
-                        const href = `/reports/builder?prefill=${prefill}`;
-                        navigate(href);
-                      }}
-                    >
-                      Open in Report Writer
-                    </Button>
-                    <Button
-                      variant="secondary"
-                      disabled={drillLoading || drillPagination.page <= 1 || !drillLastFilter}
-                      onClick={() => drillLastFilter && runDrilldown({ pointFilter: drillLastFilter, title: drillTitle, format: drillFormat, page: drillPagination.page - 1 })}
-                    >
-                      Prev
-                    </Button>
-                    <Button
-                      variant="secondary"
-                      disabled={drillLoading || !drillLastFilter || (drillPagination.page * drillPagination.pageSize) >= drillPagination.total}
-                      onClick={() => drillLastFilter && runDrilldown({ pointFilter: drillLastFilter, title: drillTitle, format: drillFormat, page: drillPagination.page + 1 })}
-                    >
-                      Next
-                    </Button>
-                  </div>
-                </div>
 
-                <div style={{ overflowX: 'auto', border: `1px solid ${colors.border.subtle}`, borderRadius: 10 }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-                    <thead>
-                      <tr style={{ textAlign: 'left', background: colors.bg.muted }}>
-                        <th style={{ padding: '8px 10px' }}>Date</th>
-                        <th style={{ padding: '8px 10px' }}>Value</th>
-                        <th style={{ padding: '8px 10px' }}>Entity</th>
-                        <th style={{ padding: '8px 10px' }}>Data Source</th>
-                        <th style={{ padding: '8px 10px' }}>Dimensions</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {drillPoints.length === 0 ? (
-                        <tr>
-                          <td colSpan={5} style={{ padding: 12, color: colors.text.muted }}>No points found.</td>
-                        </tr>
-                      ) : drillPoints.map((p: any) => (
-                        <tr key={String(p.id)} style={{ borderTop: `1px solid ${colors.border.subtle}` }}>
-                          <td style={{ padding: '8px 10px', whiteSpace: 'nowrap' }}>{String(p.date || '')}</td>
-                          <td style={{ padding: '8px 10px', whiteSpace: 'nowrap' }}>{formatNumber(Number(p.value ?? 0), drillFormat as any)}</td>
-                          <td style={{ padding: '8px 10px', whiteSpace: 'nowrap' }}>
-                            <span style={{ color: colors.text.muted }}>{String(p.entityKind || '')}</span>
-                            <span>:</span>
-                            <span style={{ marginLeft: 6 }}>{String(p.entityId || '')}</span>
-                          </td>
-                          <td style={{ padding: '8px 10px', whiteSpace: 'nowrap' }}>{String(p.dataSourceId || '')}</td>
-                          <td style={{ padding: '8px 10px' }}>
-                            <code style={{ fontSize: 11 }}>{JSON.stringify(p.dimensions || {})}</code>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                  {/* Content */}
+                  <div style={{ flex: 1, overflow: 'auto', padding: 20 }}>
+                    {drillError ? <div style={{ color: '#ef4444', fontSize: 13, marginBottom: 10 }}>{drillError}</div> : null}
+                    {drillLoading ? <Spinner /> : (
+                      <>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 10 }}>
+                          <div style={{ fontSize: 12, color: colors.text.muted }}>
+                            {drillPagination.total.toLocaleString()} points
+                          </div>
+                          <div style={{ display: 'flex', gap: 8 }}>
+                            <Button
+                              variant="secondary"
+                              disabled={drillLoading || drillPagination.page <= 1 || !drillLastFilter}
+                              onClick={() => drillLastFilter && runDrilldown({ pointFilter: drillLastFilter, title: drillTitle, format: drillFormat, page: drillPagination.page - 1 })}
+                            >
+                              Prev
+                            </Button>
+                            <Button
+                              variant="secondary"
+                              disabled={drillLoading || !drillLastFilter || (drillPagination.page * drillPagination.pageSize) >= drillPagination.total}
+                              onClick={() => drillLastFilter && runDrilldown({ pointFilter: drillLastFilter, title: drillTitle, format: drillFormat, page: drillPagination.page + 1 })}
+                            >
+                              Next
+                            </Button>
+                          </div>
+                        </div>
+
+                        <div style={{ overflowX: 'auto', border: `1px solid ${colors.border.subtle}`, borderRadius: 10 }}>
+                          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                            <thead>
+                              <tr style={{ textAlign: 'left', background: colors.bg.muted }}>
+                                <th style={{ padding: '8px 10px' }}>Date</th>
+                                <th style={{ padding: '8px 10px' }}>Value</th>
+                                <th style={{ padding: '8px 10px' }}>Entity</th>
+                                <th style={{ padding: '8px 10px' }}>Data Source</th>
+                                <th style={{ padding: '8px 10px' }}>Dimensions</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {drillPoints.length === 0 ? (
+                                <tr>
+                                  <td colSpan={5} style={{ padding: 12, color: colors.text.muted }}>No points found.</td>
+                                </tr>
+                              ) : drillPoints.map((p: any) => (
+                                <tr key={String(p.id)} style={{ borderTop: `1px solid ${colors.border.subtle}` }}>
+                                  <td style={{ padding: '8px 10px', whiteSpace: 'nowrap' }}>{String(p.date || '')}</td>
+                                  <td style={{ padding: '8px 10px', whiteSpace: 'nowrap' }}>{formatNumber(Number(p.value ?? 0), drillFormat as any)}</td>
+                                  <td style={{ padding: '8px 10px', whiteSpace: 'nowrap' }}>
+                                    <span style={{ color: colors.text.muted }}>{String(p.entityKind || '')}</span>
+                                    <span>:</span>
+                                    <span style={{ marginLeft: 6 }}>{String(p.entityId || '')}</span>
+                                  </td>
+                                  <td style={{ padding: '8px 10px', whiteSpace: 'nowrap' }}>{String(p.dataSourceId || '')}</td>
+                                  <td style={{ padding: '8px 10px' }}>
+                                    <code style={{ fontSize: 11 }}>{JSON.stringify(p.dimensions || {})}</code>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </>
+                    )}
+                  </div>
                 </div>
-              </>
-            )}
-          </div>
-        </Modal>
+              </div>
+            </>
+          )
+        ) : null}
 
         {/* Floating route drill panel (center popup with minimize/maximize) */}
         {routeDrillOpen ? (
