@@ -97,7 +97,7 @@ export async function GET(request, { params }) {
             return NextResponse.json({ error: 'Dashboard not found' }, { status: 404 });
         // Resolve scope mode for write access (shares management requires write permission)
         const mode = await resolveDashboardCoreScopeMode(request, { entity: 'dashboards', verb: 'write' });
-        // Apply scope-based access check (explicit branching on none/own/ldd/any)
+        // Apply scope-based access check (explicit branching on none/own/ldd/all)
         if (mode === 'none') {
             return NextResponse.json({ error: 'Access denied' }, { status: 403 });
         }
@@ -112,8 +112,8 @@ export async function GET(request, { params }) {
                 return NextResponse.json({ error: 'Access denied' }, { status: 403 });
             }
         }
-        else if (mode === 'any') {
-            // For 'any' mode, only owner can manage shares (shares are owner-only feature)
+        else if (mode === 'all') {
+            // For 'all' mode, only owner can manage shares (shares are owner-only feature)
             if (dash.ownerUserId !== user.sub) {
                 return NextResponse.json({ error: 'Access denied' }, { status: 403 });
             }
@@ -171,7 +171,7 @@ export async function POST(request, { params }) {
             return NextResponse.json({ error: 'Dashboard not found' }, { status: 404 });
         // Resolve scope mode for write access (shares management requires write permission)
         const mode = await resolveDashboardCoreScopeMode(request, { entity: 'dashboards', verb: 'write' });
-        // Apply scope-based access check (explicit branching on none/own/ldd/any)
+        // Apply scope-based access check (explicit branching on none/own/ldd/all)
         if (mode === 'none') {
             return NextResponse.json({ error: 'Access denied' }, { status: 403 });
         }
@@ -186,8 +186,8 @@ export async function POST(request, { params }) {
                 return NextResponse.json({ error: 'Access denied' }, { status: 403 });
             }
         }
-        else if (mode === 'any') {
-            // For 'any' mode, only owner can manage shares (shares are owner-only feature)
+        else if (mode === 'all') {
+            // For 'all' mode, only owner can manage shares (shares are owner-only feature)
             if (dash.ownerUserId !== user.sub) {
                 return NextResponse.json({ error: 'Access denied' }, { status: 403 });
             }
@@ -262,7 +262,7 @@ export async function DELETE(request, { params }) {
             return NextResponse.json({ error: 'Dashboard not found' }, { status: 404 });
         // Resolve scope mode for write access (shares management requires write permission)
         const mode = await resolveDashboardCoreScopeMode(request, { entity: 'dashboards', verb: 'write' });
-        // Apply scope-based access check (explicit branching on none/own/ldd/any)
+        // Apply scope-based access check (explicit branching on none/own/ldd/all)
         if (mode === 'none') {
             return NextResponse.json({ error: 'Access denied' }, { status: 403 });
         }
@@ -277,8 +277,8 @@ export async function DELETE(request, { params }) {
                 return NextResponse.json({ error: 'Access denied' }, { status: 403 });
             }
         }
-        else if (mode === 'any') {
-            // For 'any' mode, only owner can manage shares (shares are owner-only feature)
+        else if (mode === 'all') {
+            // For 'all' mode, only owner can manage shares (shares are owner-only feature)
             if (dash.ownerUserId !== user.sub) {
                 return NextResponse.json({ error: 'Access denied' }, { status: 403 });
             }

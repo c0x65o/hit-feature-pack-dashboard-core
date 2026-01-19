@@ -44,7 +44,7 @@ export async function GET(request: NextRequest) {
     // Resolve scope mode for read access
     const mode = await resolveDashboardCoreScopeMode(request, { entity: 'dashboards', verb: 'read' });
 
-    // Apply scope-based filtering (explicit branching on none/own/ldd/any)
+    // Apply scope-based filtering (explicit branching on none/own/ldd/all)
     let scopeModeFilter: any;
     if (mode === 'none') {
       // Explicit deny: return empty results (fail-closed but non-breaking for list UI)
@@ -52,7 +52,7 @@ export async function GET(request: NextRequest) {
     } else if (mode === 'own' || mode === 'ldd') {
       // Own scope also allows system dashboards so pack defaults are visible.
       scopeModeFilter = sql`(d.owner_user_id = ${user.sub} or d.is_system = true)`;
-    } else if (mode === 'any') {
+    } else if (mode === 'all') {
       // Show all dashboards (respecting visibility and shares)
       scopeModeFilter = sql<boolean>`true`;
     } else {
@@ -105,9 +105,9 @@ export async function GET(request: NextRequest) {
               and (s.principal_type = 'user' and s.principal_id = ${user.sub})
           )`;
 
-    // For 'any' mode, we still respect visibility and shares
+    // For 'all' mode, we still respect visibility and shares
     // For 'own' and 'ldd' modes, we only show owned dashboards (already filtered by scopeModeFilter)
-    const visibilityFilter = mode === 'any'
+    const visibilityFilter = mode === 'all'
       ? sql`(
           d.visibility = 'public'
           or d.owner_user_id = ${user.sub}

@@ -101,7 +101,7 @@ export async function GET(request, { params }) {
         const row = (result.rows || [])[0];
         if (!row)
             return NextResponse.json({ error: 'Dashboard not found' }, { status: 404 });
-        // Apply scope-based access check (explicit branching on none/own/ldd/any)
+        // Apply scope-based access check (explicit branching on none/own/ldd/all)
         if (mode === 'none') {
             return NextResponse.json({ error: 'Access denied' }, { status: 403 });
         }
@@ -116,8 +116,8 @@ export async function GET(request, { params }) {
                 return NextResponse.json({ error: 'Access denied' }, { status: 403 });
             }
         }
-        else if (mode === 'any') {
-            // For 'any' mode, we still respect visibility and shares
+        else if (mode === 'all') {
+            // For 'all' mode, we still respect visibility and shares
             const canRead = row.visibility === 'public' || row.isOwner || row.isShared;
             if (!canRead) {
                 return NextResponse.json({ error: 'Access denied' }, { status: 403 });
@@ -218,7 +218,7 @@ export async function PUT(request, { params }) {
             return NextResponse.json({ error: 'Dashboard not found' }, { status: 404 });
         if (existing.isSystem)
             return NextResponse.json({ error: 'System dashboards cannot be updated. Copy it first.' }, { status: 403 });
-        // Apply scope-based access check (explicit branching on none/own/ldd/any)
+        // Apply scope-based access check (explicit branching on none/own/ldd/all)
         if (mode === 'none') {
             return NextResponse.json({ error: 'Access denied' }, { status: 403 });
         }
@@ -233,8 +233,8 @@ export async function PUT(request, { params }) {
                 return NextResponse.json({ error: 'Access denied' }, { status: 403 });
             }
         }
-        else if (mode === 'any') {
-            // For 'any' mode, we still respect shares
+        else if (mode === 'all') {
+            // For 'all' mode, we still respect shares
             const canEdit = existing.isOwner || existing.hasFullShare;
             if (!canEdit) {
                 return NextResponse.json({ error: 'Access denied' }, { status: 403 });
