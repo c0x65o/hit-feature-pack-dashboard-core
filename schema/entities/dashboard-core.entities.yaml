@@ -1,0 +1,20 @@
+entities:
+  # Minimal schema-driven entity declarations for pack readiness checks.
+  dashboard-core.dashboard:
+    api:
+      endpoints:
+        list: /api/dashboard-definitions
+    security:
+      list:
+        authz: { entity: dashboards, verb: read }
+      detail:
+        authz: { entity: dashboards, verb: read }
+      new:
+        authz: { entity: dashboards, verb: write }
+      edit:
+        authz: { entity: dashboards, verb: write }
+    fields:
+      id: { type: text, label: ID }
+      name: { type: text, label: Name }
+      ownerUserId: { type: text, label: Owner }
+      updatedAt: { type: datetime, label: Updated }
